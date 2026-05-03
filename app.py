@@ -52,22 +52,22 @@ with st.container():
         with c1:
             land_area = st.number_input("土地面積 (坪)", min_value=0.0, value=30.0, step=0.1)
         with c2:
-            land_price = st.number_input("土地行情 (萬/坪)", min_value=0.0, value=25.0, step=0.1)
+            land_price = st.number_input("土地行情 (萬/坪)", min_value=0.0, value=14.0, step=0.1)
         with c3:
-            build_area = st.number_input("建物總面積 (坪)", min_value=0.0, value=50.0, step=0.1)
+            build_area = st.number_input("建物總面積 (坪)", min_value=0.0, value=60.0, step=0.1)
         
         c4, c5 = st.columns(2)
         with c4:
             material = st.selectbox("主要建材", ["鋼筋混凝土", "鋼筋混凝土加強磚造"])
         with c5:
-            age = st.number_input("屋齡 (年)", min_value=0, value=10)
+            age = st.number_input("屋齡 (年)", min_value=0, value=20)
         is_first_floor = True 
     else:
         c1, c2, c3 = st.columns(3)
         with c1:
-            build_area = st.number_input("建物權狀面積 (坪)", min_value=0.0, value=35.0, step=0.1)
+            build_area = st.number_input("建物權狀面積 (坪)", min_value=0.0, value=30.0, step=0.1)
         with c2:
-            age = st.number_input("屋齡 (年)", min_value=0, value=15)
+            age = st.number_input("屋齡 (年)", min_value=0, value=22)
         with c3:
             parking_type = st.selectbox("預計車位類別", ["無", "平面", "機械"])
         
