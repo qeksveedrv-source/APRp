@@ -8,10 +8,10 @@ from modules.calculator import RealEstateValuator
 from modules.data_processor import get_neighbor_data, score_neighbors
 
 # 設定頁面語系與排版
-st.set_page_config(page_title="花蓮不動產自動估價系統 (APRp)", layout="wide")
+st.set_page_config(page_title="花蓮房地估價系統 (APRp)", layout="wide")
 
 # ==========================================
-# 資料庫連線快取 (新增部分)
+# 資料庫連線快取
 # ==========================================
 @st.cache_resource
 def get_db_connection():
@@ -27,9 +27,10 @@ if 'valuation_results' not in st.session_state:
     st.session_state.valuation_results = None
 
 # ==========================================
-# 頂部區塊：參數輸入
+# 頂部區塊：網頁標題與參數輸入
 # ==========================================
-st.title("🏠 APRp 花蓮不動產自動估價系統")
+st.title("🏠 花蓮房地估價系統（APRp）")
+st.markdown("##### 資料庫：112年度至115年第一季")
 st.markdown("---")
 
 with st.container():
@@ -83,7 +84,7 @@ if run_btn:
         loc = geocoder.geocode(addr)
     
     if loc:
-        # 修改點：改用快取函式取得連線
+        # 改用快取函式取得連線
         conn = get_db_connection()
         
         if conn is None:
@@ -95,8 +96,11 @@ if run_btn:
         
         # --- 篩選條件：集合住宅避開地下室紀錄 ---
         if not raw_pool.empty and b_type != "透天厝":
+            # 排除樓層資訊包含「地下」的案例
             if 'floor_info' in raw_pool.columns:
                 raw_pool = raw_pool[~raw_pool['floor_info'].str.contains('地下', na=False)]
+            
+            # 排除門牌名稱最後面有「地下室」的案例
             if 'address' in raw_pool.columns:
                 raw_pool = raw_pool[~raw_pool['address'].str.endswith('地下室', na=False)]
         
@@ -150,8 +154,6 @@ if run_btn:
             }
         else:
             st.session_state.valuation_results = "empty"
-        
-        # 注意：使用快取資源時不應手動 conn.close()，否則下次調用會失效
     else:
         st.error("❌ 無法定位地址。")
 
@@ -208,6 +210,7 @@ elif res is not None:
         for i, (_, row) in enumerate(top_10.head(5).iterrows()):
             with st.expander(f"📍 {row['address']} ({row['transaction_date']})", expanded=(i==0)):
                 if res['b_type'] == "透天厝":
+                    # 顯示：距離、屋齡、土地面積、建物面積、市場溢價係數、權重分數
                     c1, c2 = st.columns(2)
                     c1.metric("距離", f"{row['dist_m']} m")
                     c2.metric("屋齡", f"{row['calc_age']} 年")
@@ -217,6 +220,7 @@ elif res is not None:
                     st.write(f"📈 **市場溢價係數**：{row['market_premium']}")
                     st.progress(min(row['total_score']/100, 1.0), text=f"權重分數：{row['total_score']:.1f}")
                 else:
+                    # 顯示：距離、屋齡、建物權狀面積、主建物單價、車位類型＆權利
                     c1, c2 = st.columns(2)
                     c1.metric("距離", f"{row['dist_m']} m")
                     c2.metric("屋齡", f"{row['calc_age']} 年")
