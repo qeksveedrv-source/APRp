@@ -10,43 +10,72 @@ from modules.data_processor import get_neighbor_data, score_neighbors
 # 設定頁面語系與排版
 st.set_page_config(page_title="花蓮不動產自動估價系統 (APRp)", layout="wide")
 
+# ==========================================
+# 資料庫連線快取 (新增部分)
+# ==========================================
+@st.cache_resource
+def get_db_connection():
+    """管理 SQLite 連線快取，避免頻繁開啟與關閉檔案"""
+    db_path = os.path.join('data', 'hualien.db')
+    if not os.path.exists(db_path):
+        return None
+    # check_same_thread=False 為 Streamlit 多執行緒環境必備參數
+    return sqlite3.connect(db_path, check_same_thread=False)
+
 # 初始化 session_state，用來儲存估價結果
 if 'valuation_results' not in st.session_state:
     st.session_state.valuation_results = None
 
 # ==========================================
-# 側邊欄：參數輸入 (維持原樣)
+# 頂部區塊：參數輸入
 # ==========================================
-with st.sidebar:
-    st.header("🏠 目標物件參數")
-    addr = st.text_input("輸入目標地址", "花蓮市中正路")
+st.title("🏠 APRp 花蓮不動產自動估價系統")
+st.markdown("---")
+
+with st.container():
+    st.header("📌 目標物件參數輸入")
     
-    b_type = st.selectbox("建物型態", [
-        "透天厝", 
-        "住宅大樓(11層含以上有電梯)", 
-        "華廈(10層含以下有電梯)", 
-        "公寓(5樓含以下無電梯)"
-    ])
-    
-    st.divider()
+    col_a, col_b = st.columns([2, 1])
+    with col_a:
+        addr = st.text_input("輸入目標地址", "花蓮市中正路")
+    with col_b:
+        b_type = st.selectbox("建物型態", [
+            "透天厝", 
+            "住宅大樓(11層含以上有電梯)", 
+            "華廈(10層含以下有電梯)", 
+            "公寓(5樓含以下無電梯)"
+        ])
     
     if b_type == "透天厝":
-        land_area = st.number_input("土地面積 (坪)", min_value=0.0, value=30.0, step=0.1)
-        land_price = st.number_input("土地行情 (萬/坪)", min_value=0.0, value=25.0, step=0.1)
-        build_area = st.number_input("建物總面積 (坪)", min_value=0.0, value=50.0, step=0.1)
-        material = st.selectbox("主要建材", ["鋼筋混凝土", "鋼筋混凝土加強磚造"])
-        age = st.number_input("屋齡 (年)", min_value=0, value=10)
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            land_area = st.number_input("土地面積 (坪)", min_value=0.0, value=30.0, step=0.1)
+        with c2:
+            land_price = st.number_input("土地行情 (萬/坪)", min_value=0.0, value=25.0, step=0.1)
+        with c3:
+            build_area = st.number_input("建物總面積 (坪)", min_value=0.0, value=50.0, step=0.1)
+        
+        c4, c5 = st.columns(2)
+        with c4:
+            material = st.selectbox("主要建材", ["鋼筋混凝土", "鋼筋混凝土加強磚造"])
+        with c5:
+            age = st.number_input("屋齡 (年)", min_value=0, value=10)
         is_first_floor = True 
     else:
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            build_area = st.number_input("建物權狀面積 (坪)", min_value=0.0, value=35.0, step=0.1)
+        with c2:
+            age = st.number_input("屋齡 (年)", min_value=0, value=15)
+        with c3:
+            parking_type = st.selectbox("預計車位類別", ["無", "平面", "機械"])
+        
         is_first_floor = st.checkbox("包含一樓成交紀錄", value=False)
-        build_area = st.number_input("建物權狀面積 (坪)", min_value=0.0, value=35.0, step=0.1)
-        age = st.number_input("屋齡 (年)", min_value=0, value=15)
-        parking_type = st.selectbox("預計車位類別", ["無", "平面", "機械"])
 
-    run_btn = st.button("開始評估系統", use_container_width=True)
+    run_btn = st.button("🚀 開始評估系統", use_container_width=True, type="primary")
 
 # ==========================================
-# 主畫面邏輯 (加入 Session State 儲存)
+# 運算邏輯區
 # ==========================================
 if run_btn:
     geocoder = ArcGIS()
@@ -54,17 +83,27 @@ if run_btn:
         loc = geocoder.geocode(addr)
     
     if loc:
-        db_path = os.path.join('data', 'hualien.db')
-        if not os.path.exists(db_path):
+        # 修改點：改用快取函式取得連線
+        conn = get_db_connection()
+        
+        if conn is None:
             st.error("找不到資料庫 (data/hualien.db)")
             st.stop()
             
-        conn = sqlite3.connect(db_path)
+        # 1. 抓取候選池
         raw_pool = get_neighbor_data(conn, loc.latitude, loc.longitude, b_type, addr)
         
+        # --- 篩選條件：集合住宅避開地下室紀錄 ---
+        if not raw_pool.empty and b_type != "透天厝":
+            if 'floor_info' in raw_pool.columns:
+                raw_pool = raw_pool[~raw_pool['floor_info'].str.contains('地下', na=False)]
+            if 'address' in raw_pool.columns:
+                raw_pool = raw_pool[~raw_pool['address'].str.endswith('地下室', na=False)]
+        
         if not raw_pool.empty:
-            # 執行所有原本的計算與評分邏輯
+            # 2. 權重計分
             scored_pool = score_neighbors(raw_pool, age, is_first_floor)
+            
             numeric_cols = ['land_area', 'building_area', 'total_price', 'main_building_area', 'berth_price', 'berth_area']
             for col in numeric_cols:
                 if col in scored_pool.columns:
@@ -75,7 +114,6 @@ if run_btn:
             if 'berth_area' in scored_pool.columns:
                 scored_pool['berth_area'] = (scored_pool['berth_area'] * 0.3025).round(2)
 
-            # 估價計算分流
             if b_type == "透天厝":
                 grouped_records = []
                 for a, group in scored_pool.groupby('address', sort=False):
@@ -105,49 +143,41 @@ if run_btn:
                 eval_text = f"{low_up:.1f} 萬/坪 - {high_up:.1f} 萬/坪"
                 eval_mode = f"依目標面積推算總價 (不含車位)：{int(low_up * build_area):,}萬 ~ {int(high_up * build_area):,}萬"
 
-            # 將結果存入 session_state
             st.session_state.valuation_results = {
-                'addr': addr,
-                'lat': loc.latitude,
-                'lon': loc.longitude,
-                'top_10': top_10,
-                'eval_text': eval_text,
-                'eval_mode': eval_mode,
-                'b_type': b_type,
-                'build_area': build_area
+                'addr': addr, 'lat': loc.latitude, 'lon': loc.longitude,
+                'top_10': top_10, 'eval_text': eval_text, 'eval_mode': eval_mode,
+                'b_type': b_type, 'build_area': build_area
             }
         else:
             st.session_state.valuation_results = "empty"
-        conn.close()
+        
+        # 注意：使用快取資源時不應手動 conn.close()，否則下次調用會失效
     else:
         st.error("❌ 無法定位地址。")
 
 # ==========================================
-# 渲染畫面 (從 Session State 讀取)
+# 下方區塊：結果顯示
 # ==========================================
 res = st.session_state.valuation_results
 
 if res == "empty":
     st.warning("⚠️ 3 公里範圍內查無符合型態的成交紀錄。")
 elif res is not None:
-    # 顯示成功定位資訊
+    st.markdown("---")
     st.success(f"📍 定位成功：{res['addr']} ({res['lat']:.5f}, {res['lon']:.5f})")
-    st.divider()
 
-    # 顯示估價結果指標
-    col1, col2 = st.columns(2)
+    m_col1, m_col2 = st.columns(2)
     if res['b_type'] == "透天厝":
-        col1.metric("⚖️ 建議行情區間", res['eval_text'])
-        col2.info(f"估價模式：{res['eval_mode']}")
+        m_col1.metric("⚖️ 建議行情區間", res['eval_text'])
+        m_col2.info(f"估價模式：{res['eval_mode']}")
     else:
-        col1.metric("⚖️ 建物實質單價建議", res['eval_text'])
+        m_col1.metric("⚖️ 建物實質單價建議", res['eval_text'])
         st.write(f"👉 {res['eval_mode']}")
 
     st.write("### 📋 近鄰成交參考紀錄")
     top_10 = res['top_10']
     top_10['dist_m'] = (top_10['dist'] * 1000).astype(int)
 
-    # 整理表格顯示欄位 (維持原本的 display_cols 邏輯)
     if res['b_type'] == "透天厝":
         top_10['sort_date_only'] = top_10['transaction_date'].astype(str).apply(lambda x: x.split('~')[0])
         top_10 = top_10.sort_values(by=['is_avg', 'sort_date_only'], ascending=[True, False])
@@ -172,26 +202,32 @@ elif res is not None:
             'price_10k': '實登價格(萬)', 'total_score': '權重分數', 'transaction_date': '成交日'
         }
 
-    # 檢視模式切換 (現在點選後資料會保留)
     view_mode = st.radio("檢視模式", ["📱 手機優先 (Top 5 卡片)", "💻 完整資料表"], horizontal=True, label_visibility="collapsed")
 
     if view_mode == "📱 手機優先 (Top 5 卡片)":
         for i, (_, row) in enumerate(top_10.head(5).iterrows()):
             with st.expander(f"📍 {row['address']} ({row['transaction_date']})", expanded=(i==0)):
-                c1, c2 = st.columns(2)
                 if res['b_type'] == "透天厝":
-                    c1.metric("成交價", f"{row['price_display']} 萬")
-                    c2.metric("距離", f"{row['dist_m']} m")
-                    st.write(f"🏠 **面積**：{row['building_area']} 坪 | **屋齡**：{row['calc_age']} 年")
+                    c1, c2 = st.columns(2)
+                    c1.metric("距離", f"{row['dist_m']} m")
+                    c2.metric("屋齡", f"{row['calc_age']} 年")
+                    
+                    st.write(f"📐 **土地面積**：{row['land_area']} 坪")
+                    st.write(f"🏠 **建物面積**：{row['building_area']} 坪")
+                    st.write(f"📈 **市場溢價係數**：{row['market_premium']}")
+                    st.progress(min(row['total_score']/100, 1.0), text=f"權重分數：{row['total_score']:.1f}")
                 else:
-                    c1.metric("單價", f"{row['main_unit_price']} 萬/坪")
-                    c2.metric("距離", f"{row['dist_m']} m")
-                    st.write(f"💰 **總價**：{row['price_10k']} 萬 | **車位**：{row['berth_display']}")
-                st.progress(min(row['total_score']/100, 1.0), text=f"權重分數：{row['total_score']:.1f}")
+                    c1, c2 = st.columns(2)
+                    c1.metric("距離", f"{row['dist_m']} m")
+                    c2.metric("屋齡", f"{row['calc_age']} 年")
+                    
+                    st.write(f"🏢 **建物權狀面積**：{row['building_area']} 坪")
+                    st.write(f"💰 **主建物單價**：{row['main_unit_price']} 萬/坪")
+                    st.write(f"🚗 **車位類型＆權利**：{row['berth_display']}")
+                    st.progress(min(row['total_score']/100, 1.0), text=f"權重分數：{row['total_score']:.1f}")
     else:
         st.dataframe(top_10[list(display_cols.keys())].rename(columns=display_cols), use_container_width=True)
 
-    # 底部參考資料 (維持原樣)
     if res['b_type'] != "透天厝":
         st.markdown("---")
         st.write("### 💡 車位建議行情參考")
