@@ -29,7 +29,7 @@ if 'valuation_results' not in st.session_state:
 # 頂部區塊：網頁標題與參數輸入
 # ==========================================
 st.title("🏠 花蓮房地估價系統（APRp）")
-st.markdown("##### 核心功能：手機卡片檢視、成交日排序、街路排他邏輯、一年內資料優先")
+st.markdown("##### 資料庫112年到115年第一季")
 st.markdown("---")
 
 with st.container():
@@ -37,7 +37,7 @@ with st.container():
     
     col_a, col_b = st.columns([2, 1])
     with col_a:
-        addr = st.text_input("輸入目標地址", "花蓮市南京街")
+        addr = st.text_input("輸入目標地址", "花蓮縣吉安鄉")
     with col_b:
         b_type = st.selectbox("建物型態", [
             "透天厝", 
@@ -159,7 +159,7 @@ if run_btn:
                 top_10 = final_pool.head(10).copy()
                 low_up, high_up = RealEstateValuator.run_apartment_valuation(top_10)
                 eval_text = f"{low_up:.1f} 萬/坪 - {high_up:.1f} 萬/坪"
-                eval_mode = f"依目標面積推算總價：{int(low_up * build_area):,}萬 ~ {int(high_up * build_area):,}萬"
+                eval_mode = f"依面積推算總價：{int(low_up * build_area):,}萬 ~ {int(high_up * build_area):,}萬(不含車位）"
                 
                 # 排序顯示：最新成交日在最上面
                 top_10 = top_10.sort_values('deal_date', ascending=False)
