@@ -29,7 +29,7 @@ if 'valuation_results' not in st.session_state:
 # 頂部區塊：網頁標題與參數輸入
 # ==========================================
 st.title("🏠 花蓮房地估價系統（APRp）")
-st.markdown("##### 核心功能：成交日排序（最新優先）、街路排他邏輯")
+st.markdown("##### 核心功能：手機卡片檢視、成交日排序、街路排他邏輯、一年內資料優先")
 st.markdown("---")
 
 with st.container():
@@ -88,6 +88,7 @@ if run_btn:
             st.error("找不到資料庫 (data/hualien.db)")
             st.stop()
             
+        # 1. 抓取候選池
         raw_pool = get_neighbor_data(conn, loc.latitude, loc.longitude, b_type, addr)
         
         if not raw_pool.empty:
@@ -98,9 +99,10 @@ if run_btn:
                 if 'address' in raw_pool.columns:
                     raw_pool = raw_pool[~raw_pool['address'].str.endswith('地下室', na=False)]
             
+            # 2. 權重計分
             scored_pool = score_neighbors(raw_pool, age, is_first_floor)
             
-            # --- 一年內資料優先篩選邏輯 ---
+            # --- 一年內資料優先篩選 ---
             now = datetime.now()
             one_year_ago_roc = (now.year - 1911 - 1) * 10000 + now.month * 100 + now.day
             recent_mask = scored_pool['deal_date'].astype(int) >= one_year_ago_roc
@@ -123,6 +125,7 @@ if run_btn:
             final_pool['total_build_area'] = (final_pool['total_build_area'] * 0.3025).round(2)
 
             if b_type == "透天厝":
+                # 透天分組邏輯
                 grouped_records = []
                 for a, group in final_pool.groupby('address', sort=False):
                     row = group.iloc[0].copy()
@@ -137,6 +140,7 @@ if run_btn:
                 merged_pool = pd.DataFrame(grouped_records)
                 merged_pool['sort_date'] = merged_pool['deal_date'].astype(str).apply(lambda x: x.split('~')[-1])
                 
+                # 選案策略
                 latest_5 = merged_pool.sort_values('sort_date', ascending=False).head(5)
                 remaining = merged_pool[~merged_pool.index.isin(latest_5.index)]
                 closest_5 = remaining.sort_values('dist', ascending=True).head(5)
@@ -151,6 +155,7 @@ if run_btn:
                 # 排序顯示：最新成交日在最上面
                 top_10 = top_10.sort_values('sort_date', ascending=False)
             else:
+                # 集合住宅選案
                 top_10 = final_pool.head(10).copy()
                 low_up, high_up = RealEstateValuator.run_apartment_valuation(top_10)
                 eval_text = f"{low_up:.1f} 萬/坪 - {high_up:.1f} 萬/坪"
@@ -193,6 +198,9 @@ elif res is not None:
     top_10 = res['top_10']
     top_10['dist_m'] = (top_10['dist'] * 1000).astype(int)
 
+    # 檢視模式選擇按鈕
+    view_mode = st.radio("檢視模式", ["📱 手機優先 (Top 5 卡片)", "💻 完整資料表"], horizontal=True, label_visibility="collapsed")
+
     if res['b_type'] == "透天厝":
         top_10['price_display'] = top_10.apply(
             lambda r: f"(平均) {int(r['price']/10000)}" if r['is_avg'] else str(int(r['price']/10000)), axis=1
@@ -213,8 +221,29 @@ elif res is not None:
             'price_10k': '價格(萬)', 'deal_date': '成交日'
         }
 
-    st.dataframe(top_10[list(display_cols.keys())].rename(columns=display_cols), use_container_width=True)
+    # 手機卡片檢視邏輯
+    if view_mode == "📱 手機優先 (Top 5 卡片)":
+        for i, (_, row) in enumerate(top_10.head(5).iterrows()):
+            with st.expander(f"📍 {row['address']} ({row['deal_date']})", expanded=(i==0)):
+                if res['b_type'] == "透天厝":
+                    c1, c2 = st.columns(2)
+                    c1.metric("距離", f"{row['dist_m']} m")
+                    c2.metric("屋齡", f"{row['calc_age']} 年")
+                    st.write(f"📐 **土地面積**：{row['land_area']} 坪")
+                    st.write(f"🏠 **建物面積**：{row['total_build_area']} 坪")
+                    st.write(f"📈 **市場溢價係數**：{row['market_premium']}")
+                else:
+                    c1, c2 = st.columns(2)
+                    c1.metric("距離", f"{row['dist_m']} m")
+                    c2.metric("屋齡", f"{row['calc_age']} 年")
+                    st.write(f"🏢 **建物面積**：{row['total_build_area']} 坪")
+                    st.write(f"💰 **實質單價**：{row['unit_price_p']:.1f} 萬/坪")
+                    st.write(f"🚗 **車位**：{row['berth_display']}")
+                st.progress(min(row['total_score']/100, 1.0), text=f"權重分數：{row['total_score']:.1f}")
+    else:
+        st.dataframe(top_10[list(display_cols.keys())].rename(columns=display_cols), use_container_width=True)
 
+    # 車位建議行情表
     if res['b_type'] != "透天厝":
         st.markdown("---")
         st.write("### 💡 車位建議行情參考")
