@@ -15,13 +15,13 @@ st.set_page_config(page_title="花蓮房地估價系統 (APRp)", layout="wide")
 # ==========================================
 @st.cache_resource
 def get_db_connection():
-    """管理 SQLite 連線快取，避免頻繁開啟與關閉檔案"""
+    """管理 SQLite 連線快取，避免頻繁開啟與關閉檔案[cite: 6]"""
     db_path = os.path.join('data', 'hualien.db')
     if not os.path.exists(db_path):
         return None
     return sqlite3.connect(db_path, check_same_thread=False)
 
-# 初始化 session_state，用來儲存估價結果
+# 初始化 session_state，用來儲存估價結果[cite: 6]
 if 'valuation_results' not in st.session_state:
     st.session_state.valuation_results = None
 
@@ -29,7 +29,7 @@ if 'valuation_results' not in st.session_state:
 # 頂部區塊：網頁標題與參數輸入
 # ==========================================
 st.title("🏠 花蓮房地估價系統（APRp）")
-st.markdown("##### 核心功能：街路排他邏輯、一年內資料優先篩選")
+st.markdown("##### 核心功能：成交日排序優化（最新優先）、街路排他邏輯[cite: 6]")
 st.markdown("---")
 
 with st.container():
@@ -88,38 +88,34 @@ if run_btn:
             st.error("找不到資料庫 (data/hualien.db)")
             st.stop()
             
-        # 1. 抓取候選池 (內含街路排他邏輯)
+        # 1. 抓取候選池[cite: 6]
         raw_pool = get_neighbor_data(conn, loc.latitude, loc.longitude, b_type, addr)
         
-        # --- 篩選條件：集合住宅避開地下室紀錄 ---
-        if not raw_pool.empty and b_type != "透天厝":
-            if 'floor_level' in raw_pool.columns:
-                raw_pool = raw_pool[~raw_pool['floor_level'].str.contains('地下', na=False)]
-            if 'address' in raw_pool.columns:
-                raw_pool = raw_pool[~raw_pool['address'].str.endswith('地下室', na=False)]
-        
         if not raw_pool.empty:
-            # 2. 權重計分
+            # 集合住宅避開地下室紀錄[cite: 6]
+            if b_type != "透天厝":
+                if 'floor_level' in raw_pool.columns:
+                    raw_pool = raw_pool[~raw_pool['floor_level'].str.contains('地下', na=False)]
+                if 'address' in raw_pool.columns:
+                    raw_pool = raw_pool[~raw_pool['address'].str.endswith('地下室', na=False)]
+            
+            # 2. 權重計分[cite: 6]
             scored_pool = score_neighbors(raw_pool, age, is_first_floor)
             
-            # --- 一年內資料優先篩選邏輯 ---
+            # --- 一年內資料優先篩選[cite: 1, 6] ---
             now = datetime.now()
-            # 民國年日期門檻 (例如 1150506)
             one_year_ago_roc = (now.year - 1911 - 1) * 10000 + now.month * 100 + now.day
-            
-            # 優先檢查一年內資料
             recent_mask = scored_pool['deal_date'].astype(int) >= one_year_ago_roc
             recent_data = scored_pool[recent_mask].copy()
             
             if len(recent_data) >= 10:
                 final_pool = recent_data
-                valuation_msg = "採用近一年成交紀錄進行估價"
+                valuation_msg = "採用近一年成交紀錄進行估價"[cite: 1, 6]
             else:
                 final_pool = scored_pool.copy()
-                valuation_msg = "因近一年成交量不足十筆，系統已納入一年以上紀錄以供參考"
-            # ---------------------------
+                valuation_msg = "因近一年成交量不足十筆，系統已納入一年以上紀錄以供參考"[cite: 1, 6]
 
-            # 數值型態與單位轉換
+            # 數值型態與單位轉換[cite: 6]
             numeric_cols = ['land_area', 'total_build_area', 'price', 'main_area', 'parking_price', 'parking_area']
             for col in numeric_cols:
                 if col in final_pool.columns:
@@ -127,11 +123,9 @@ if run_btn:
             
             final_pool['land_area'] = (final_pool['land_area'] * 0.3025).round(2)
             final_pool['total_build_area'] = (final_pool['total_build_area'] * 0.3025).round(2)
-            if 'parking_area' in final_pool.columns:
-                final_pool['parking_area'] = (final_pool['parking_area'] * 0.3025).round(2)
 
             if b_type == "透天厝":
-                # 透天分組邏輯
+                # 透天分組邏輯[cite: 6]
                 grouped_records = []
                 for a, group in final_pool.groupby('address', sort=False):
                     row = group.iloc[0].copy()
@@ -144,9 +138,10 @@ if run_btn:
                     grouped_records.append(row)
                 
                 merged_pool = pd.DataFrame(grouped_records)
+                # 建立排序專用日期欄位[cite: 6]
                 merged_pool['sort_date'] = merged_pool['deal_date'].astype(str).apply(lambda x: x.split('~')[-1])
                 
-                # 選案策略：5最新 + 5最近
+                # 選案策略[cite: 6]
                 latest_5 = merged_pool.sort_values('sort_date', ascending=False).head(5)
                 remaining = merged_pool[~merged_pool.index.isin(latest_5.index)]
                 closest_5 = remaining.sort_values('dist', ascending=True).head(5)
@@ -156,13 +151,19 @@ if run_btn:
                 low, high, premiums_list = RealEstateValuator.run_detached_valuation(target_data, top_10, land_price)
                 top_10['market_premium'] = premiums_list
                 eval_text = f"{int(low):,} 萬 - {int(high):,} 萬"
-                eval_mode = "透天厝成本法 (5最新+5最近加權)"
+                eval_mode = "透天厝成本法 (5最新+5最近加權)"[cite: 6]
+                
+                # 🌟 確保顯示時成交日由新到舊排序[cite: 6]
+                top_10 = top_10.sort_values('sort_date', ascending=False)
             else:
-                # 集合住宅選案：前 10 筆權重最高者
+                # 集合住宅選案[cite: 6]
                 top_10 = final_pool.head(10).copy()
                 low_up, high_up = RealEstateValuator.run_apartment_valuation(top_10)
                 eval_text = f"{low_up:.1f} 萬/坪 - {high_up:.1f} 萬/坪"
-                eval_mode = f"依目標面積推算總價：{int(low_up * build_area):,}萬 ~ {int(high_up * build_area):,}萬"
+                eval_mode = f"依目標面積推算總價：{int(low_up * build_area):,}萬 ~ {int(high_up * build_area):,}萬"[cite: 6]
+                
+                # 🌟 確保顯示時成交日由新到舊排序[cite: 6]
+                top_10 = top_10.sort_values('deal_date', ascending=False)
 
             st.session_state.valuation_results = {
                 'addr': addr, 'lat': loc.latitude, 'lon': loc.longitude,
@@ -185,7 +186,7 @@ if res == "empty":
 elif res is not None:
     st.markdown("---")
     st.success(f"📍 定位成功：{res['addr']}")
-    st.info(f"💡 系統提示：{res['valuation_msg']}")
+    st.info(f"💡 系統提示：{res['valuation_msg']}")[cite: 1, 6]
 
     m_col1, m_col2 = st.columns(2)
     if res['b_type'] == "透天厝":
@@ -194,14 +195,14 @@ elif res is not None:
         m_col1.metric("⚖️ 建物實質單價建議", res['eval_text'])
     m_col2.info(f"估價模式：{res['eval_mode']}")
 
-    st.write("### 📋 近鄰成交參考紀錄")
+    st.write("### 📋 近鄰成交參考紀錄 (依日期由新至舊排序)")
     top_10 = res['top_10']
     top_10['dist_m'] = (top_10['dist'] * 1000).astype(int)
 
     if res['b_type'] == "透天厝":
         top_10['price_display'] = top_10.apply(
             lambda r: f"(平均) {int(r['price']/10000)}" if r['is_avg'] else str(int(r['price']/10000)), axis=1
-        )
+        )[cite: 6]
         display_cols = {
             'address': '門牌', 'dist_m': '距離(m)', 'total_build_area': '建物面積(坪)',
             'calc_age': '屋齡(年)', 'land_area': '土地面積(坪)', 'price_display': '成交價(萬)',
@@ -210,7 +211,7 @@ elif res is not None:
     else:
         top_10['berth_display'] = top_10.apply(
             lambda r: f"{RealEstateValuator.get_berth_info(r)[0]}{RealEstateValuator.get_berth_info(r)[1]}", axis=1
-        )
+        )[cite: 6]
         top_10['price_10k'] = (top_10['price'] / 10000).astype(int)
         display_cols = {
             'address': '門牌', 'dist_m': '距離(m)', 'total_build_area': '建物權狀面積(坪)',
@@ -220,7 +221,6 @@ elif res is not None:
 
     st.dataframe(top_10[list(display_cols.keys())].rename(columns=display_cols), use_container_width=True)
 
-    # 顯示車位建議行情
     if res['b_type'] != "透天厝":
         st.markdown("---")
         st.write("### 💡 車位建議行情參考")
@@ -229,4 +229,4 @@ elif res is not None:
             "權利": ["所有權", "使用權", "所有權", "使用權"],
             "建議行情": ["130～180萬", "90～140萬", "60～100萬", "30～70萬"]
         })
-        st.table(parking_ref)
+        st.table(parking_ref)[cite: 6]
