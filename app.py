@@ -9,6 +9,51 @@ from modules.data_processor import get_neighbor_data, score_neighbors
 
 # 設定頁面語系與排版
 st.set_page_config(page_title="花蓮房地估價系統 (APRp)", layout="wide")
+# --- 加入列印優化 CSS ---
+st.markdown("""
+    <style>
+    @media print {
+        /* 1. 隱藏 Streamlit 原生介面（選單、頁尾、裝飾線） */
+        header, footer, .stDeployButton, [data-testid="stToolbar"] {
+            display: none !important;
+        }
+
+        /* 2. 移除網頁邊距，強制內容填滿 A4 */
+        .main .block-container {
+            padding-top: 1rem !important;
+            padding-bottom: 0rem !important;
+            max-width: 100% !important;
+        }
+
+        /* 3. 隱藏「開始評估系統」按鈕與「參數輸入區」，只印結果（可選） */
+        /* 如果你想連輸入區一起印，請刪除下面這行 */
+        button[kind="primary"] { display: none !important; }
+
+        /* 4. 縮小字體以確保能塞進一張 A4 */
+        h1 { font-size: 22px !important; }
+        h2 { font-size: 18px !important; }
+        h3 { font-size: 16px !important; }
+        p, span, div { font-size: 12px !important; }
+
+        /* 5. 針對表格或卡片的優化 */
+        .stTable, .stDataFrame {
+            width: 100% !important;
+            font-size: 10px !important;
+        }
+
+        /* 強制不換頁，盡量塞在一張 */
+        .main {
+            overflow: visible !important;
+        }
+    }
+
+    /* 設定紙張邊距 */
+    @page {
+        size: A4;
+        margin: 1cm;
+    }
+    </style>
+""", unsafe_allow_html=True)
 
 # ==========================================
 # 資料庫連線快取
@@ -30,6 +75,8 @@ if 'valuation_results' not in st.session_state:
 # ==========================================
 st.title("🏠 花蓮房地估價系統（APRp）")
 st.markdown("##### 資料庫112年到115年第一季")
+st.markdown("**估價模式**")
+st.markdown(" 透天厝 = 成本法折舊＋市場溢價調整、集合住宅 = 實質單價拆算 ＋ 相似度權重加權")
 st.markdown("---")
 
 with st.container():
