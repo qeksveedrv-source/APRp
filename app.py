@@ -238,8 +238,8 @@ elif res is not None:
     if res['b_type'] == "透天厝":
         m_col1.metric("⚖️ 建議行情區間", res['eval_text'])
     else:
-        m_col1.metric("⚖️ 建物實質單價建議", res['eval_text'])
-    m_col2.info(f"估價模式：{res['eval_mode']}")
+        m_col1.metric("⚖️ 建物行情建議", res['eval_mode'])
+    m_col2.info(f"單價區間：{res['eval_text']}")
 
     st.write("### 📋 近鄰成交參考紀錄 (依日期由新至舊排序)")
     top_10 = res['top_10']
