@@ -41,8 +41,8 @@ def get_neighbor_data(conn, t_lat, t_lon, b_type, t_addr=""):
         axis=1
     )
 
-    # 3. 篩選 1 公里內最接近的前 20 筆作為候選池
-    target_df = df[df['dist'] <= 1.0].sort_values('dist').head(20)
+    # 3. 篩選 1 公里內最接近的前 30 筆作為候選池
+    target_df = df[df['dist'] <= 1.0].sort_values('dist').head(30)
     
     return target_df
 
