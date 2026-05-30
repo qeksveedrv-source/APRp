@@ -1,69 +1,67 @@
 import pandas as pd
 import math
 import sqlite3
-import re  # 新增：引入正規表示式模組
+import re  
 from datetime import datetime
 
-def haversine(lat1, lon1, lat2, lon2):
-    """計算兩點間的球面距離 (公里)"""
-    R = 6371  
-    dlat = math.radians(lat2 - lat1)
-    dlon = math.radians(lon2 - lon1)
-    a = (math.sin(dlat / 2) ** 2 +
-         math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) *
-         math.sin(dlon / 2) ** 2)
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-    return R * c
+# 引入自訂模組
+from modules.utils import haversine
+from modules import settings  # 引入剛建立的設定檔
 
 def get_neighbor_data(conn, t_lat, t_lon, b_type, t_addr=""):
-    """從資料庫抓取初步候選池，僅保留街路排他邏輯"""
+    """從資料庫抓取初步候選池，加入 Bounding Box 邊界框與街路排他邏輯"""
     core_keyword = b_type.split('(')[0].strip()
     
-    # 對齊資料庫欄位名稱
+    # 計算 Bounding Box
+    lat_delta = settings.SEARCH_RADIUS_KM / settings.LAT_DEGREE_KM
+    lon_delta = settings.SEARCH_RADIUS_KM / (settings.LAT_DEGREE_KM * math.cos(math.radians(t_lat)))
+    
+    min_lat, max_lat = t_lat - lat_delta, t_lat + lat_delta
+    min_lon, max_lon = t_lon - lon_delta, t_lon + lon_delta
+    
     query = f"""
         SELECT * FROM records 
         WHERE build_type LIKE '%{core_keyword}%' 
         AND target_type LIKE '%房地%' 
         AND Response_X != ''
+        AND CAST(Response_Y AS REAL) BETWEEN {min_lat} AND {max_lat}
+        AND CAST(Response_X AS REAL) BETWEEN {min_lon} AND {max_lon}
     """
     df = pd.read_sql(query, conn)
     
     if df.empty:
         return df
 
-    # --- 街路排他邏輯：僅當目標在街時，排除路邊案例 ---
     if '街' in t_addr:
         df = df[~df['address'].str.contains('路', na=False)]
 
-    # 2. 計算地理距離
+    # ==========================================
+    # 同門牌多筆紀錄，直接在這裡只保留「時間最新」的一筆
+    # ==========================================
+    if not df.empty:
+        # 1. 確保交易日期格式一致以便排序
+        df['deal_date'] = df['deal_date'].astype(str)
+        
+        # 2. 依照交易日期由新到舊排序
+        df = df.sort_values('deal_date', ascending=False)
+        
+        # 3. 剔除重複的門牌，保留第一筆 (即最新的一筆)，完全不計算平均！
+        df = df.drop_duplicates(subset=['address'], keep='first').copy()
+    # ==========================================
+
+    # 後續的距離計算 (保持不變)
     df['dist'] = df.apply(
         lambda r: haversine(t_lat, t_lon, float(r['Response_Y']), float(r['Response_X'])), 
         axis=1
     )
 
-    # 3. 篩選 1 公里內最接近的前 30 筆作為候選池
-    target_df = df[df['dist'] <= 1.0].sort_values('dist').head(30)
+    # 套用 settings 中的距離與筆數限制
+    target_df = df[df['dist'] <= settings.SEARCH_RADIUS_KM].sort_values('dist').head(settings.MAX_CANDIDATES)
     
     return target_df
 
-def extract_street_part(addr):
-    """解析地址，萃取到巷弄層級以便進行相似度比對"""
-    if not isinstance(addr, str) or not addr:
-        return ""
-    
-    # 先移除縣市鄉鎮區，避免因行政區層級不同而比對失敗 (例如：花蓮縣吉安鄉 vs 吉安鄉)
-    addr = re.sub(r'^.*?[縣市]', '', addr)
-    addr = re.sub(r'^.*?[鄉鎮市區]', '', addr)
-    
-    # 抓取「路/街/大道」以及緊接在後的「巷、弄」
-    m = re.match(r'(.+?[路街道](?:[0-9一二三四五六七八九十百千]+巷)?(?:[0-9一二三四五六七八九十百千]+弄)?)', addr)
-    if m:
-        return m.group(1)
-    return ""
-
-# 注意：此處參數新增了 t_addr="" 預設值，以便接收前端傳來的目標地址
-def score_neighbors(df, target_age, is_first_floor_checked, t_addr=""):
-    """權重計分邏輯，對齊 deal_date, build_date, floor_level，並新增地址相近加分"""
+def score_neighbors(df, target_age, is_first_floor_checked):
+    """權重計分邏輯"""
     if df.empty: return df
 
     if not is_first_floor_checked:
@@ -71,43 +69,35 @@ def score_neighbors(df, target_age, is_first_floor_checked, t_addr=""):
         if df.empty: return df
 
     current_roc_year = datetime.now().year - 1911
-    
-    # 事前解析好目標地址的核心街道部分 (例如："吉昌二街220巷")
-    target_prefix = extract_street_part(t_addr)
 
     def calc_score(row):
         score = 0
+        
+        # 1. 交易年份計分
         try:
             deal_year = int(str(row['deal_date'])[:-4])
             year_diff = current_roc_year - deal_year
-            if year_diff <= 1: score += 6
-            elif year_diff == 2: score += 3
-            else: score += 1
-        except: score += 1
+            if year_diff <= 1: score += settings.SCORE["DEAL_1_YEAR"]
+            elif year_diff == 2: score += settings.SCORE["DEAL_2_YEAR"]
+            else: score += settings.SCORE["DEAL_BASE"]
+        except: score += settings.SCORE["DEAL_BASE"]
 
+        # 2. 屋齡差異計分
         try:
             build_year = int(str(row['build_date'])[:-4])
             row_age = current_roc_year - build_year
         except: row_age = target_age
             
         age_diff = abs(row_age - target_age)
-        if age_diff <= 2: score += 4
-        elif age_diff <= 5: score += 3
-        elif age_diff <= 10: score += 2
-        else: score += 1
-
-        if row['dist'] <= 1.0: score += 3
-        elif row['dist'] <= 2.0: score += 2
+        if age_diff <= 2: score += settings.SCORE["AGE_DIFF_2"]
+        elif age_diff <= 5: score += settings.SCORE["AGE_DIFF_5"]
+        elif age_diff <= 10: score += settings.SCORE["AGE_DIFF_10"]
+        else: score += settings.SCORE["AGE_BASE"]
         
-        # ====== 新增邏輯：地址相近或相同加分 ======
-        if target_prefix and pd.notna(row.get('address')):
-            row_prefix = extract_street_part(str(row['address']))
-            # 如果資料庫案例的街道巷弄與目標相同，加 5 分
-            if row_prefix and row_prefix == target_prefix:
-                score += 5
-        # ==========================================
-
-        if age_diff > 11: score = score * 0.8
+        # 3. 總分懲罰機制 (打折)
+        if age_diff > settings.AGE_PENALTY_THRESHOLD: 
+            score = score * settings.AGE_PENALTY_RATE
+            
         return score
 
     df['total_score'] = df.apply(calc_score, axis=1)
