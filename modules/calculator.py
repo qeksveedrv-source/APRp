@@ -1,86 +1,93 @@
 import pandas as pd
 import numpy as np
-from modules import settings  # 引入設定檔
+from modules import settings
 
 class RealEstateValuator:
 
-    # ==========================================
-    # 🌟 1. 建築造價與折舊模型 (透天厝專用)
-    # ==========================================
+    # 🌟 新增：缺少的計算成本函式 (這會被上方函式呼叫)
+    @staticmethod
+    def calculate_cost(land_area, build_area, age, material):
+        # 取得單坪折舊後的成本
+        unit_cost = RealEstateValuator.get_building_cost(material, age)
+        return (build_area * unit_cost)
+
     @staticmethod
     def get_building_cost(material, age):
+        """
+        採用在地金融機構（信合社）實戰比例階梯表
+        特色：直接讀取 settings 既有的 RC/磚造 基準造價，套用前快後慢階梯折舊。
+        """
+        # 1. 根據材質自動判斷基準造價 (直接沿用您原本的 settings 設定)
         material = str(material)
         if "鋼筋混凝土" in material and "磚" not in material:
-            base_price = settings.BUILD_COST_RC
-            life_span = settings.BUILD_USEFUL_LIFE_RC
-            # 讀取 RC 最低殘值 (1萬元)
-            min_residual = settings.MIN_RESIDUAL_COST_RC
+            base = settings.BUILD_COST_RC      # RC造價
         else:
-            base_price = settings.BUILD_COST_BRICK
-            life_span = settings.BUILD_USEFUL_LIFE_BRICK
-            # 讀取磚造最低殘值 (0.5萬元 = 5000元)
-            min_residual = settings.MIN_RESIDUAL_COST_BRICK
+            base = settings.BUILD_COST_BRICK   # 加強磚造價
+
+        # 2. 套用信合社實戰比例階梯 (以 100% 為基準)
+        if age <= 3: 
+            rate = 1.00    # 基準點
+        elif age <= 5: 
+            rate = 0.92    
+        elif age <= 7: 
+            rate = 0.83    
+        elif age <= 9: 
+            rate = 0.75    
+        elif age <= 11: 
+            rate = 0.67    
+        elif age <= 15: 
+            rate = 0.58    # 緩衝期
+        elif age <= 25: 
+            rate = 0.50    # 正式進入十年一階
+        elif age <= 35: 
+            rate = 0.42    
+        elif age <= 45: 
+            rate = 0.33    
+        else: 
+            rate = 0.25    # 46年以上殘值底線 (RC為3萬 / 磚造為2萬)
             
-        cost = base_price * (1 - (age / life_span))
+        return base * rate
+
+    @staticmethod
+    def run_detached_valuation(target_data, top_10_df, land_price):
+        """透天厝估價引擎：採用加權平均溢價係數"""
         
-        # 回傳算出的殘值與設定的「最低殘值」兩者之間較高的那個
-        return max(cost, min_residual)
-    # ==========================================
-    # 2. 透天厝估價引擎 (成本法 + 加權中位數溢價)
-    # ==========================================
-    @classmethod
-    def run_detached_valuation(cls, target, df, land_price):
-        target_build_cost = cls.get_building_cost(target.get('material', ''), target.get('age', 0))
-        target_base_cost = (target.get('land', 0) * land_price) + (target.get('build', 0) * target_build_cost)
+        # 計算目標物件標準成本
+        t_cost = RealEstateValuator.calculate_cost(
+            target_data['land'], target_data['build'], target_data['age'], target_data['material']
+        )
+        target_total_cost = (target_data['land'] * land_price) + t_cost
 
-        # 防呆：如果沒有鄰近案例，直接回傳基礎成本
-        if df.empty:
-            return target_base_cost * settings.PRICE_LOWER_BOUND, target_base_cost * settings.PRICE_UPPER_BOUND, []
+        premiums = []
+        weighted_premiums_sum = 0
+        total_weights = top_10_df['total_score'].sum()
 
-        # 1. 批次計算所有案例的建物單坪造價，強制轉為數值 (Numeric) 並填補 0，避免空值或字串導致運算崩潰
-        df['b_cost'] = df.apply(lambda row: cls.get_building_cost(row.get('material', ''), row.get('calc_age', 0)), axis=1)
-        land_area = pd.to_numeric(df['land_area'], errors='coerce').fillna(0)
-        build_area = pd.to_numeric(df['total_build_area'], errors='coerce').fillna(0)
-        # 除以 10000，將資料庫的「元」統一轉換為「萬元」，以對齊成本單位
-        price = pd.to_numeric(df['price'], errors='coerce').fillna(0) / 10000.0
-
-        # 2. 批次計算歷史案例總成本，防止「除以 0」產生 Infinity (無限大)
-        df['record_cost'] = (land_area * land_price) + (build_area * df['b_cost'])
-        df['record_cost'] = df['record_cost'].replace(0, np.nan)
-        
-        # 3. 批次計算市場溢價率：(實際總價 - 總成本) / 總成本
-        df['premium'] = (price - df['record_cost']) / df['record_cost']
-        df['premium'] = df['premium'].replace([np.inf, -np.inf], np.nan)
-        valid_df = df.dropna(subset=['premium']).copy()
-
-        # 4. 加權中位數計算
-        if not valid_df.empty:
-            weights = valid_df['total_score'].fillna(1).values
-            premiums = valid_df['premium'].values
-
-            # 根據溢價率進行排序
-            sorted_indices = np.argsort(premiums)
-            sorted_premiums = premiums[sorted_indices]
-            sorted_weights = weights[sorted_indices]
+        for idx, row in top_10_df.iterrows():
+            c_cost = RealEstateValuator.calculate_cost(
+                row['land_area'], row['total_build_area'], row['calc_age'], "鋼筋混凝土" 
+            )
+            case_total_cost = (row['land_area'] * land_price) + c_cost
             
-            # 找出權重累積超過一半的位置 (加權中位數)
-            cumulative_weights = np.cumsum(sorted_weights)
-            cutoff = np.sum(weights) / 2.0
-            median_idx = np.searchsorted(cumulative_weights, cutoff)
-            median_idx = min(median_idx, len(sorted_premiums) - 1) 
+            # 計算溢價率 (避免除以零)
+            if case_total_cost > 0:
+                premium = (row['price'] / 10000 - case_total_cost) / case_total_cost
+            else:
+                premium = 0
             
-            weighted_median_premium = sorted_premiums[median_idx]
+            premiums.append(round(premium, 4))
+            weighted_premiums_sum += (premium * row['total_score'])
+
+        if total_weights > 0:
+            final_premium = weighted_premiums_sum / total_weights
         else:
-            weighted_median_premium = 0
+            final_premium = 0.1 
 
-        # 5. 推算目標總價與區間
-        final_target_price = target_base_cost * (1 + weighted_median_premium)
-        
-        # 輸出溢價率清單供 app.py 介面使用
-        premiums_list = [f"{p:.0%}" for p in valid_df['premium']] if not valid_df.empty else []
-        
-        return final_target_price * settings.PRICE_LOWER_BOUND, final_target_price * settings.PRICE_UPPER_BOUND, premiums_list
+        center_price = target_total_cost * (1 + final_premium)
+        low_bound = center_price * settings.PRICE_LOWER_BOUND
+        high_bound = center_price * settings.PRICE_UPPER_BOUND
 
+        return low_bound, high_bound, premiums
+    
     # ==========================================
     # 3. 集合住宅估價引擎 (實質單價法 + 加權平均)
     # ==========================================

@@ -60,8 +60,8 @@ def get_neighbor_data(conn, t_lat, t_lon, b_type, t_addr=""):
     
     return target_df
 
-def score_neighbors(df, target_age, is_first_floor_checked):
-    """權重計分邏輯"""
+def score_neighbors(df, target_age, is_first_floor_checked, target_area=0, b_type=""):
+    """權重計分邏輯 (透天與集合住宅雙軌計分)"""
     if df.empty: return df
 
     if not is_first_floor_checked:
@@ -73,31 +73,89 @@ def score_neighbors(df, target_age, is_first_floor_checked):
     def calc_score(row):
         score = 0
         
-        # 1. 交易年份計分
+        # --- 準備共用運算變數 ---
         try:
             deal_year = int(str(row['deal_date'])[:-4])
             year_diff = current_roc_year - deal_year
-            if year_diff <= 1: score += settings.SCORE["DEAL_1_YEAR"]
-            elif year_diff == 2: score += settings.SCORE["DEAL_2_YEAR"]
-            else: score += settings.SCORE["DEAL_BASE"]
-        except: score += settings.SCORE["DEAL_BASE"]
-
-        # 2. 屋齡差異計分
+        except:
+            year_diff = 99
+            
         try:
             build_year = int(str(row['build_date'])[:-4])
             row_age = current_roc_year - build_year
-        except: row_age = target_age
-            
+        except:
+            row_age = target_age
         age_diff = abs(row_age - target_age)
-        if age_diff <= 2: score += settings.SCORE["AGE_DIFF_2"]
-        elif age_diff <= 5: score += settings.SCORE["AGE_DIFF_5"]
-        elif age_diff <= 10: score += settings.SCORE["AGE_DIFF_10"]
-        else: score += settings.SCORE["AGE_BASE"]
         
-        # 3. 總分懲罰機制 (打折)
-        if age_diff > settings.AGE_PENALTY_THRESHOLD: 
-            score = score * settings.AGE_PENALTY_RATE
+        dist_m = row.get('dist', 999) * 1000
+        
+        try:
+            case_area = float(row['total_build_area']) * settings.SQM_TO_PING
+        except:
+            case_area = 0
+
+        # ==========================================
+        # 🏠 透天厝計分邏輯
+        # ==========================================
+        if b_type == "透天厝":
+            # 1. 交易年份
+            if year_diff <= 1: score += settings.SCORE_HOUSE["DEAL_1_YEAR"]
+            elif year_diff <= 2: score += settings.SCORE_HOUSE["DEAL_2_YEAR"]
+            elif year_diff <= 3: score += settings.SCORE_HOUSE["DEAL_3_YEAR"]
+            else: score += settings.SCORE_HOUSE["DEAL_OVER_3"]
             
+            # 2. 屋齡差異
+            if age_diff <= 2: score += settings.SCORE_HOUSE["AGE_DIFF_2"]
+            elif age_diff <= 5: score += settings.SCORE_HOUSE["AGE_DIFF_5"]
+            elif age_diff <= 10: score += settings.SCORE_HOUSE["AGE_DIFF_10"]
+            else: score += settings.SCORE_HOUSE["AGE_BASE"]
+            
+            # 3. 距離計分
+            if dist_m <= 100: score += settings.SCORE_HOUSE["DIST_100M"]
+            elif dist_m <= 250: score += settings.SCORE_HOUSE["DIST_250M"]
+            elif dist_m <= 500: score += settings.SCORE_HOUSE["DIST_500M"]
+            else: score += settings.SCORE_HOUSE["DIST_BASE"]
+            
+            # 4. 坪數差異
+            if target_area > 0 and case_area > 0:
+                diff_ratio = abs(case_area - target_area) / target_area
+                if diff_ratio <= 0.10: score += settings.SCORE_HOUSE["AREA_DIFF_10"]
+                elif diff_ratio <= 0.20: score += settings.SCORE_HOUSE["AREA_DIFF_20"]
+                else: score += settings.SCORE_HOUSE["AREA_BASE"]
+            else:
+                score += settings.SCORE_HOUSE["AREA_BASE"]
+
+        # ==========================================
+        # 🏢 集合住宅計分邏輯
+        # ==========================================
+        else:
+            # 1. 交易年份
+            if year_diff <= 1: score += settings.SCORE_APT["DEAL_1_YEAR"]
+            elif year_diff <= 2: score += settings.SCORE_APT["DEAL_2_YEAR"]
+            elif year_diff <= 3: score += settings.SCORE_APT["DEAL_3_YEAR"]
+            else: score += settings.SCORE_APT["DEAL_OVER_3"]
+            
+            # 2. 屋齡差異
+            if age_diff <= 2: score += settings.SCORE_APT["AGE_DIFF_2"]
+            elif age_diff <= 5: score += settings.SCORE_APT["AGE_DIFF_5"]
+            elif age_diff <= 10: score += settings.SCORE_APT["AGE_DIFF_10"]
+            else: score += settings.SCORE_APT["AGE_BASE"]
+            
+            # 3. 距離計分
+            if dist_m <= 100: score += settings.SCORE_APT["DIST_100M"]
+            elif dist_m <= 500: score += settings.SCORE_APT["DIST_500M"]
+            else: score += settings.SCORE_APT["DIST_BASE"]
+            
+            # 4. 坪數差異
+            if target_area > 0 and case_area > 0:
+                diff_ratio = abs(case_area - target_area) / target_area
+                if diff_ratio <= 0.10: score += settings.SCORE_APT["AREA_DIFF_10"]
+                elif diff_ratio <= 0.20: score += settings.SCORE_APT["AREA_DIFF_20"]
+                elif diff_ratio <= 0.30: score += settings.SCORE_APT["AREA_DIFF_30"]
+                else: score += settings.SCORE_APT["AREA_BASE"]
+            else:
+                score += settings.SCORE_APT["AREA_BASE"]
+
         return score
 
     df['total_score'] = df.apply(calc_score, axis=1)

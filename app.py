@@ -119,9 +119,9 @@ with st.container():
     with col_b:
         b_type = st.selectbox("建物型態", [
             "透天厝", 
-            "住宅大樓(11層含以上有電梯)", 
-            "華廈(10層含以下有電梯)", 
-            "公寓(5樓含以下無電梯)"
+            "住宅大樓(11樓有電梯)", 
+            "華廈(10樓有電梯)", 
+            "公寓(5樓無電梯)"
         ])
     
     if b_type == "透天厝":
@@ -145,8 +145,6 @@ with st.container():
             build_area = st.number_input("建物權狀面積 (坪)", min_value=0.0, value=30.0, step=0.1)
         with c2:
             age = st.number_input("屋齡 (年)", min_value=0, value=22)
-        with c3:
-            parking_type = st.selectbox("預計車位類別", ["無", "平面", "機械"])
         
         is_first_floor = st.checkbox("包含一樓成交紀錄", value=False)
 
@@ -178,31 +176,42 @@ if run_btn:
                 if 'address' in raw_pool.columns:
                     raw_pool = raw_pool[~raw_pool['address'].str.endswith('地下室', na=False)]
             
+            # 2. 權重計分 (傳入目標坪數與型態，供距離與面積計分使用)
+            scored_pool = score_neighbors(raw_pool, age, is_first_floor, build_area, b_type)
+            
             # 2. 權重計分
-            scored_pool = score_neighbors(raw_pool, age, is_first_floor)
+            scored_pool = score_neighbors(raw_pool, age, is_first_floor, build_area, b_type)
             
-            # --- 複合條件篩選：近期優先 (最多5筆) + 距離最近補足 ---
-            now = datetime.now()
-            one_year_ago_roc = (now.year - 1911 - 1) * 10000 + now.month * 100 + now.day
-            recent_mask = scored_pool['deal_date'].astype(int) >= one_year_ago_roc
+            # --- 絕對分數門檻 (>=10分) ---
+            final_pool = scored_pool[scored_pool['total_score'] >= settings.MIN_TOTAL_SCORE].copy()
             
-            # 1. 抓出近一年的資料，並取前 5 筆 (因 scored_pool 已依總分排序，這裡挑出的是近期最高分)
-            recent_data = scored_pool[recent_mask].copy()
-            top_recent = recent_data.head(5)
+            # 依照分數由高到低排序，最多取前 10 筆作為估價基準
+            top_10 = final_pool.sort_values(['total_score', 'deal_date'], ascending=[False, False]).head(10)
             
-            # 2. 將已經被選中的近期資料從候選池中剔除，避免重複
-            remaining_data = scored_pool.drop(top_recent.index)
+            valuation_msg = f"嚴格權重篩選：共找到 {len(top_10)} 筆權重達標 (>=10分) 之相似紀錄"
+
+            # 數值型態與單位轉換
+            numeric_cols = ['land_area', 'total_build_area', 'price', 'main_area', 'parking_price', 'parking_area']
+            for col in numeric_cols:
+                if col in final_pool.columns:
+                    final_pool[col] = pd.to_numeric(final_pool[col], errors='coerce').fillna(0)
             
-            # 3. 從剩下的資料中，改依照「距離 (dist)」由近到遠排序，補足剩下的筆數
-            # 假設 settings.MIN_VALID_CASES 為 10，這裡會自動計算還缺幾筆 (例如 10 - 5 = 5 筆)
-            needed_cases = settings.MIN_VALID_CASES - len(top_recent)
-            top_closest = remaining_data.sort_values('dist', ascending=True).head(needed_cases)
-            
-            # 4. 合併兩組資料作為最終估價樣本池
-            final_pool = pd.concat([top_recent, top_closest])
-            
-            # 5. 更新畫面顯示的提示訊息
-            valuation_msg = f"複合篩選模式：採用 {len(top_recent)} 筆一年內紀錄，搭配 {len(top_closest)} 筆距離最近之歷史紀錄"
+            # 面積換算改用 settings 常數
+            top_10['land_area'] = (top_10['land_area'] * settings.SQM_TO_PING).round(2)
+            top_10['total_build_area'] = (top_10['total_build_area'] * settings.SQM_TO_PING).round(2)
+
+            if b_type == "透天厝":
+                target_data = {'land': land_area, 'build': build_area, 'age': age, 'material': material_val}
+                low, high, premiums_list = RealEstateValuator.run_detached_valuation(target_data, top_10, land_price)
+                top_10['market_premium'] = premiums_list
+                eval_text = f"{int(low):,} 萬 - {int(high):,} 萬"
+                eval_mode = "透天厝成本法 (依相似度權重篩選)"
+                top_10 = top_10.sort_values('deal_date', ascending=False)
+            else:
+                low_up, high_up = RealEstateValuator.run_apartment_valuation(top_10)
+                eval_text = f"{low_up:.1f} 萬/坪 - {high_up:.1f} 萬/坪"
+                eval_mode = f"依面積推算總價：{int(low_up * build_area):,}萬 ~ {int(high_up * build_area):,}萬(不含車位）"
+                top_10 = top_10.sort_values('deal_date', ascending=False)
 
             # 數值型態與單位轉換
             numeric_cols = ['land_area', 'total_build_area', 'price', 'main_area', 'parking_price', 'parking_area']
@@ -491,16 +500,16 @@ elif res is not None:
         if res.get('b_type') == "透天厝":
             display_low = int(val_low / 10000) if val_low > 100000 else int(val_low)
             display_high = int(val_high / 10000) if val_high > 100000 else int(val_high)
-            price_text = f"💰 建議行情：{display_low}萬 ～ {display_high}萬"
+            price_text = f"💰 合理行情：{display_low}萬 ～ {display_high}萬"
         else:
             try:
                 build_float = float(display_build)
                 apt_total_low = val_low * build_float
                 apt_total_high = val_high * build_float
-                price_text = f"💰 建議行情（不含車位）：{int(apt_total_low)}萬 ～ {int(apt_total_high)}萬"
-                caption_text = f"💡 單價區間：{val_low:.1f}萬 ～ {val_high:.1f}萬 / 坪"
+                price_text = f"💰 合理行情（不含車位）：{int(apt_total_low)}萬 ～ {int(apt_total_high)}萬"
+                caption_text = f"💡 主建物單價區間：{val_low:.1f}萬 ～ {val_high:.1f}萬 / 坪"
             except:
-                price_text = f"💰 建議行情（不含車位）：{val_low:.1f}萬 ～ {val_high:.1f}萬 / 坪"
+                price_text = f"💰 合理行情（不含車位）：{val_low:.1f}萬 ～ {val_high:.1f}萬 / 坪"
 
     # 第一行排版：地址與區間
     target_address = res.get('addr', '未知地址').replace("花蓮縣", "")
@@ -552,44 +561,40 @@ elif res is not None:
     # 分流欄位清洗與嚴格排序
     if res['b_type'] == "透天厝":
         top_10_df['成交價(萬)'] = top_10_df['price'].apply(lambda x: f"{x/10000:,.0f}" if pd.notna(x) else "-")
+        top_10_df['權重'] = top_10_df['total_score'] 
+        
+        top_10_df['market_premium'] = top_10_df['market_premium'].apply(lambda x: f"{x * 100:.0f}%" if pd.notna(x) else "-")
+        
         top_10_df = top_10_df.rename(columns={
-            'address': '門牌',
-            'total_build_area': '建物面積(坪)',
-            'calc_age': '屋齡(年)',
-            'land_area': '土地面積(坪)',
-            'market_premium': '溢價係數',
-            'deal_date': '成交日'
+            'address': '門牌', 'total_build_area': '建物面積(坪)',
+            'calc_age': '屋齡(年)', 'land_area': '土地面積(坪)',
+            'market_premium': '溢價係數', 'deal_date': '成交日'
         })
           
         desired_columns = [
             '標記', '門牌', '距離(m)', '建物面積(坪)', '屋齡(年)', 
-            '土地面積(坪)', '成交價(萬)', '溢價係數',  '成交日'
+            '土地面積(坪)', '成交價(萬)', '溢價係數',  '成交日', '權重'
         ]
-    else:  # 集合住宅 (大樓 / 華廈 / 公寓)
+    else:  # 集合住宅
         top_10_df['實登價格(萬)'] = top_10_df['price'].apply(lambda x: f"{x/10000:,.0f}" if pd.notna(x) else "-")
+        top_10_df['權重'] = top_10_df['total_score']  # 🌟 新增權重欄位
 
         if 'unit_price_p' in top_10_df.columns:
             top_10_df['主建物單價'] = top_10_df['unit_price_p'].round(1)
-        else:
-            top_10_df['主建物單價'] = "-"
+        else: top_10_df['主建物單價'] = "-"
 
-        if 'berth_display' in top_10_df.columns:
-            top_10_df = top_10_df.rename(columns={'berth_display': '車位類型＆權利'})
-        elif 'parking_type' in top_10_df.columns:
-            top_10_df['車位類型＆權利'] = top_10_df['parking_type'].fillna("無車位")
-        else:
-            top_10_df['車位類型＆權利'] = "-"
+        if 'berth_display' in top_10_df.columns: top_10_df = top_10_df.rename(columns={'berth_display': '車位'})
+        elif 'parking_type' in top_10_df.columns: top_10_df['車位'] = top_10_df['parking_type'].fillna("無車位")
+        else: top_10_df['車位'] = "-"
 
         top_10_df = top_10_df.rename(columns={
-            'address': '門牌',
-            'total_build_area': '建物權狀面積(坪)',
-            'calc_age': '屋齡(年)',
-            'deal_date': '成交日'
+            'address': '門牌', 'total_build_area': '權狀面積(坪)',
+            'calc_age': '屋齡(年)', 'deal_date': '成交日'
         })
 
         desired_columns = [
-            '標記', '門牌', '距離(m)', '建物權狀面積(坪)', '屋齡(年)',
-            '主建物單價', '車位類型＆權利', '實登價格(萬)',  '成交日'
+            '標記', '門牌', '距離(m)', '權狀面積(坪)', '屋齡(年)',
+            '主建物單價', '車位', '實登價格(萬)',  '成交日', '權重'
         ]
     # ==========================================
     # 欄位過濾，並剔除空案例
@@ -597,15 +602,20 @@ elif res is not None:
     final_table_df = top_10_df[desired_columns].copy()
     final_table_df = final_table_df[final_table_df['標記'] != ""]
 
-    # 解決小數點過多問題，強制將數值轉換為乾淨的文字格式
+    # 1. 透天厝的面積處理
     if '建物面積(坪)' in final_table_df.columns:
         final_table_df['建物面積(坪)'] = final_table_df['建物面積(坪)'].apply(lambda x: f"{float(x):.2f}" if pd.notna(x) and x != "-" else x)
     
     if '土地面積(坪)' in final_table_df.columns:
         final_table_df['土地面積(坪)'] = final_table_df['土地面積(坪)'].apply(lambda x: f"{float(x):.2f}" if pd.notna(x) and x != "-" else x)
         
-    # (原本關於 is_avg 的 def format_price 落落長的判斷式已經全部清除了！)
-
+    # 2. 集合住宅的面積處理 
+    if '權狀面積(坪)' in final_table_df.columns:
+        final_table_df['權狀面積(坪)'] = final_table_df['權狀面積(坪)'].apply(lambda x: f"{float(x):.2f}" if pd.notna(x) and x != "-" else x)
+    # 3. 集合住宅的單價處理 
+    if '主建物單價' in final_table_df.columns:
+        final_table_df['主建物單價'] = final_table_df['主建物單價'].apply(lambda x: f"{float(x):.1f}" if pd.notna(x) and x != "-" else x)
+        
     # =========================================================================
     # 呈現對齊地圖的完整資料表 (強制網頁與 PDF 列印框線完全顯現版)
     # =========================================================================
@@ -674,7 +684,7 @@ elif res is not None:
     st.table(final_table_df)
 
     # =========================================================================
-    # 在表格下方加入：透天厝訪價邏輯說明 (僅限透天厝顯示)
+    # 在表格下方加入：透天厝訪價邏輯說明
     # =========================================================================
     if res.get('b_type') == "透天厝":
         st.markdown("""
@@ -708,18 +718,19 @@ elif res is not None:
                     <div style="flex: 1;">
                         <b>第一階段：權重計分與案例篩選</b> (於周邊 1 公里內搜尋並為歷史案例打分)<br>
                         • <b>計分規則</b>：<br>
-                        &nbsp;&nbsp;1. <b>交易年份</b>：1年內加6分、2年內加3分、大於2年1分。<br>
+                        &nbsp;&nbsp;1. <b>交易年份</b>：1年內加6分、2年內加3分、3年內加1分、逾3年扣3分。<br>
                         &nbsp;&nbsp;2. <b>屋齡差異</b>：落差2年內加4分、5年內加3分、10年內加2分、大於10年1分。<br>
-                        • <b>扣分懲罰</b>：歷史案例與標的屋齡落差超過 15 年，總分乘以 0.8，避免極端值主導。<br>
-                        • <b>5+5 選案法</b>：優先挑選日期「最新」的 5 筆，搭配距離「最近」的 5 筆，精選 10 筆案例。
+                        &nbsp;&nbsp;3. <b>距離遠近</b>：100m內加7分、250m內加5分、500m內加3分、逾500m加1分。<br>
+                        &nbsp;&nbsp;4. <b>坪數差異</b>：落差10%內加3分、20%內加2分、逾20%加1分。<br>
+                        • <b>篩選門檻</b>：權重未達 15 分之案例直接剔除不列入參考，確保合理性。
                     </div>
-                    <div style="flex: 1;">
+                    <<div style="flex: 1;">
                         <b>第二階段：估價引擎運算</b><br>
                         • <b>成本法算底價</b>：總成本 = (土地面積 × 土地行情) + (建物面積 × 折舊後單坪造價)。<br>
-                        &nbsp;&nbsp;(全新 RC 12萬/坪耐用50年，殘值1萬；磚造 8萬/坪耐用35年，殘值0.5萬)<br>
                         • <b>回推市場溢價</b>：溢價率 = (實際成交總價 - 案例總成本) / 案例總成本。<br>
-                        • <b>加權中位數</b>：溢價率依低到高排序，並根據第一階段的「總分」尋找跨過 50% 累積權重的溢價率作為市場基準。<br>
-                        • <b>預測中心價</b>：標的總成本 × (1 + 加權中位數溢價率)，最終呈現 ±5% 之合理區間。
+                        • <b>加權平均溢價</b>：依各案例「總分」作為權重，計算加權平均溢價係數。<br>
+                        &nbsp;&nbsp;<span style="color: #555; font-size: 11px;">(公式：Σ(溢價率 × 權重) / Σ權重)</span><br>
+                        • <b>預測中心價</b>：標的總成本 × (1 + 加權平均溢價)，最終呈現 ±6% 之合理區間。
                     </div>
                 </div>
             </div>
@@ -785,10 +796,11 @@ elif res is not None:
                     <div class="algo-column" style="flex: 1.1;">
                         <b>第一階段：權重計分與案例篩選</b> (周邊 1 公里內)<br>
                         • <b>計分規則</b>：<br>
-                        &nbsp;&nbsp;1. <b>交易年份</b>：1年內加6分、2年內加3分、大於2年1分。<br>
-                        &nbsp;&nbsp;2. <b>屋齡差異</b>：落差2年內加4分、5年內加3分、10年內加2分、大於10年1分。<br>
-                        • <b>扣分懲罰</b>：歷史案例與標的屋齡落差超過 15 年，總分乘以 0.8，避免極端值主導。<br>
-                        • <b>精選案例</b>：依照總分與距離篩選出最具參考價值的 10 筆歷史成交紀錄。
+                        &nbsp;&nbsp;1. <b>交易年份</b>：1年內加7分、2年內加5分、3年內加3分、逾3年扣3分。<br>
+                        &nbsp;&nbsp;2. <b>屋齡差異</b>：落差2年內加6分、5年內加4分、10年內加2分、大於10年1分。<br>
+                        &nbsp;&nbsp;3. <b>距離遠近</b>：100m內加3分、500m內加2分、逾500m加1分。<br>
+                        &nbsp;&nbsp;4. <b>坪數差異</b>：落差10%內加4分、20%內加3分、30%內加2分、逾30%加1分。<br>
+                        • <b>篩選門檻</b>：權重未達 15 分之案例直接剔除不列入參考，確保合理性。
                     </div>
                     <div class="algo-column" style="flex: 1.1;">
                         <b>第二階段：估價引擎運算</b><br>
@@ -796,7 +808,7 @@ elif res is not None:
                         • <b>加權平均單價</b>：將 10 筆案例的實質單價，依照第一階段算出的「總分」進行加權平均。<br>
                         &nbsp;&nbsp;<span style="color: #555; font-size: 11px;">(公式：Σ(各案例實質單價 × 各案例總分) / Σ(所有案例總分) )</span><br>
                         • <b>預測中心總價</b>：加權平均單價 × 目標物件建物面積 (不含車位)。<br>
-                        • <b>合理區間</b>：將預測中心價乘上 ±5%，得出最終建議行情區間。
+                        • <b>合理區間</b>：將預測中心價乘上 ±6%，得出最終合理行情區間。
                     </div>
                     <div class="algo-column" style="flex: 0.8;">
                         <b>🚗 車位建議行情參考</b><br>
