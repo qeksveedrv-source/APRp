@@ -206,12 +206,10 @@ if run_btn:
                 low, high, top_10 = RealEstateValuator.run_detached_valuation(target_data, final_pool, land_price)
                 eval_text = f"{int(low):,} 萬 - {int(high):,} 萬"
                 eval_mode = "透天厝成本法 (依相似度權重篩選)"
-                top_10 = top_10.sort_values('deal_date', ascending=False)
             else:
                 low_up, high_up = RealEstateValuator.run_apartment_valuation(top_10)
                 eval_text = f"{low_up:.1f} 萬/坪 - {high_up:.1f} 萬/坪"
                 eval_mode = f"依面積推算總價：{int(low_up * build_area):,}萬 ~ {int(high_up * build_area):,}萬(不含車位）"
-                top_10 = top_10.sort_values('deal_date', ascending=False)
 
             # 數值型態與單位轉換
             numeric_cols = ['land_area', 'total_build_area', 'price', 'main_area', 'parking_price', 'parking_area']
