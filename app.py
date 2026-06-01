@@ -244,9 +244,7 @@ if run_btn:
                 low, high, top_10 = RealEstateValuator.run_detached_valuation(target_data, final_pool, land_price)
                 eval_text = f"{int(low):,} 萬 - {int(high):,} 萬"
                 eval_mode = "透天厝成本法 (5最新+5最近加權)"
-                
-                # 排序顯示：最新成交日在最上面
-                top_10 = top_10.sort_values('deal_date', ascending=False)
+
             else:
                 # 集合住宅選案
                 top_10 = final_pool.head(10).copy()
@@ -254,9 +252,6 @@ if run_btn:
                 eval_text = f"{low_up:.1f} 萬/坪 - {high_up:.1f} 萬/坪"
                 eval_mode = f"依面積推算總價：{int(low_up * build_area):,}萬 ~ {int(high_up * build_area):,}萬(不含車位）"
                 
-                # 排序顯示：最新成交日在最上面
-                top_10 = top_10.sort_values('deal_date', ascending=False)
-
             st.session_state.valuation_results = {
                 'addr': addr, 'lat': loc.latitude, 'lon': loc.longitude,
                 'top_10': top_10, 'eval_text': eval_text, 'eval_mode': eval_mode,
