@@ -202,8 +202,8 @@ if run_btn:
 
             if b_type == "透天厝":
                 target_data = {'land': land_area, 'build': build_area, 'age': age, 'material': material_val}
-                low, high, premiums_list = RealEstateValuator.run_detached_valuation(target_data, top_10, land_price)
-                top_10['market_premium'] = premiums_list
+                # 🌟 改為傳入完整的 final_pool，並由引擎回傳過濾好的正數 top_10
+                low, high, top_10 = RealEstateValuator.run_detached_valuation(target_data, final_pool, land_price)
                 eval_text = f"{int(low):,} 萬 - {int(high):,} 萬"
                 eval_mode = "透天厝成本法 (依相似度權重篩選)"
                 top_10 = top_10.sort_values('deal_date', ascending=False)
@@ -242,13 +242,13 @@ if run_btn:
                 top_10 = pd.concat([latest_5, closest_5])
                 
                 target_data = {'land': land_area, 'build': build_area, 'age': age, 'material': material_val}
-                low, high, premiums_list = RealEstateValuator.run_detached_valuation(target_data, top_10, land_price)
-                top_10['market_premium'] = premiums_list
+                # 🌟 直接用 top_10 接收引擎過濾好、且已經內建好溢價係數的最終資料表！
+                low, high, top_10 = RealEstateValuator.run_detached_valuation(target_data, final_pool, land_price)
                 eval_text = f"{int(low):,} 萬 - {int(high):,} 萬"
                 eval_mode = "透天厝成本法 (5最新+5最近加權)"
                 
                 # 排序顯示：最新成交日在最上面
-                top_10 = top_10.sort_values('sort_date', ascending=False)
+                top_10 = top_10.sort_values('deal_date', ascending=False)
             else:
                 # 集合住宅選案
                 top_10 = final_pool.head(10).copy()
@@ -573,7 +573,7 @@ elif res is not None:
           
         desired_columns = [
             '標記', '門牌', '距離(m)', '建物面積(坪)', '屋齡(年)', 
-            '土地面積(坪)', '成交價(萬)', '溢價係數',  '成交日', '權重'
+            '土地面積(坪)', '成交價(萬)', '溢價係數',  '成交日',
         ]
     else:  # 集合住宅
         top_10_df['實登價格(萬)'] = top_10_df['price'].apply(lambda x: f"{x/10000:,.0f}" if pd.notna(x) else "-")
@@ -594,7 +594,7 @@ elif res is not None:
 
         desired_columns = [
             '標記', '門牌', '距離(m)', '權狀面積(坪)', '屋齡(年)',
-            '主建物單價', '車位', '實登價格(萬)',  '成交日', '權重'
+            '主建物單價', '車位', '實登價格(萬)',  '成交日', 
         ]
     # ==========================================
     # 欄位過濾，並剔除空案例
@@ -718,19 +718,18 @@ elif res is not None:
                     <div style="flex: 1;">
                         <b>第一階段：權重計分與案例篩選</b> (於周邊 1 公里內搜尋並為歷史案例打分)<br>
                         • <b>計分規則</b>：<br>
-                        &nbsp;&nbsp;1. <b>交易年份</b>：1年內加6分、2年內加3分、3年內加1分、逾3年扣3分。<br>
-                        &nbsp;&nbsp;2. <b>屋齡差異</b>：落差2年內加4分、5年內加3分、10年內加2分、大於10年1分。<br>
-                        &nbsp;&nbsp;3. <b>距離遠近</b>：100m內加7分、250m內加5分、500m內加3分、逾500m加1分。<br>
-                        &nbsp;&nbsp;4. <b>坪數差異</b>：落差10%內加3分、20%內加2分、逾20%加1分。<br>
-                        • <b>篩選門檻</b>：權重未達 15 分之案例直接剔除不列入參考，確保合理性。
+                        &nbsp;&nbsp;1. <b>交易年份</b>：1年內加6分、2年內加2分、3年內加1分、逾3年扣3分。<br>
+                        &nbsp;&nbsp;3. <b>距離遠近</b>：250m內加4分、500m內加3分、逾500m加1分。<br>
+                        • <b>篩選門檻</b>：權重未達 之案例直接剔除不列入參考，確保合理性。
                     </div>
-                    <<div style="flex: 1;">
+                    <div class="algo-column" style="flex: 1.1;">
                         <b>第二階段：估價引擎運算</b><br>
-                        • <b>成本法算底價</b>：總成本 = (土地面積 × 土地行情) + (建物面積 × 折舊後單坪造價)。<br>
-                        • <b>回推市場溢價</b>：溢價率 = (實際成交總價 - 案例總成本) / 案例總成本。<br>
-                        • <b>加權平均溢價</b>：依各案例「總分」作為權重，計算加權平均溢價係數。<br>
-                        &nbsp;&nbsp;<span style="color: #555; font-size: 11px;">(公式：Σ(溢價率 × 權重) / Σ權重)</span><br>
-                        • <b>預測中心價</b>：標的總成本 × (1 + 加權平均溢價)，最終呈現 ±6% 之合理區間。
+                        • <b>透天厝模式 (極端值排除法)</b>：<br>
+                        &nbsp;&nbsp;1. 計算案例溢價係數 <span style="font-size: 11px;">(成交價-總成本)/總成本</span>。<br>
+                        &nbsp;&nbsp;2. <b>剔除負數</b>：溢價係數為負者不具參考價值，直接排除。<br>
+                        &nbsp;&nbsp;3. <b>次高次低平均</b>：排除最高與最低值，取次高與次低係數平均。<br>
+                        &nbsp;&nbsp;4. 預測中心價 = 標的總成本 × (1 + 平均認定溢價係數)。<br>
+                        • <b>合理區間</b>：將預測中心價乘上 ±6%，得出最終合理行情區間。
                     </div>
                 </div>
             </div>
@@ -797,10 +796,8 @@ elif res is not None:
                         <b>第一階段：權重計分與案例篩選</b> (周邊 1 公里內)<br>
                         • <b>計分規則</b>：<br>
                         &nbsp;&nbsp;1. <b>交易年份</b>：1年內加7分、2年內加5分、3年內加3分、逾3年扣3分。<br>
-                        &nbsp;&nbsp;2. <b>屋齡差異</b>：落差2年內加6分、5年內加4分、10年內加2分、大於10年1分。<br>
                         &nbsp;&nbsp;3. <b>距離遠近</b>：100m內加3分、500m內加2分、逾500m加1分。<br>
-                        &nbsp;&nbsp;4. <b>坪數差異</b>：落差10%內加4分、20%內加3分、30%內加2分、逾30%加1分。<br>
-                        • <b>篩選門檻</b>：權重未達 15 分之案例直接剔除不列入參考，確保合理性。
+                        • <b>篩選門檻</b>：權重未達 之案例直接剔除不列入參考，確保合理性。
                     </div>
                     <div class="algo-column" style="flex: 1.1;">
                         <b>第二階段：估價引擎運算</b><br>

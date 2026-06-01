@@ -104,26 +104,11 @@ def score_neighbors(df, target_age, is_first_floor_checked, target_area=0, b_typ
             elif year_diff <= 3: score += settings.SCORE_HOUSE["DEAL_3_YEAR"]
             else: score += settings.SCORE_HOUSE["DEAL_OVER_3"]
             
-            # 2. 屋齡差異
-            if age_diff <= 2: score += settings.SCORE_HOUSE["AGE_DIFF_2"]
-            elif age_diff <= 5: score += settings.SCORE_HOUSE["AGE_DIFF_5"]
-            elif age_diff <= 10: score += settings.SCORE_HOUSE["AGE_DIFF_10"]
-            else: score += settings.SCORE_HOUSE["AGE_BASE"]
-            
             # 3. 距離計分
             if dist_m <= 100: score += settings.SCORE_HOUSE["DIST_100M"]
             elif dist_m <= 250: score += settings.SCORE_HOUSE["DIST_250M"]
             elif dist_m <= 500: score += settings.SCORE_HOUSE["DIST_500M"]
             else: score += settings.SCORE_HOUSE["DIST_BASE"]
-            
-            # 4. 坪數差異
-            if target_area > 0 and case_area > 0:
-                diff_ratio = abs(case_area - target_area) / target_area
-                if diff_ratio <= 0.10: score += settings.SCORE_HOUSE["AREA_DIFF_10"]
-                elif diff_ratio <= 0.20: score += settings.SCORE_HOUSE["AREA_DIFF_20"]
-                else: score += settings.SCORE_HOUSE["AREA_BASE"]
-            else:
-                score += settings.SCORE_HOUSE["AREA_BASE"]
 
         # ==========================================
         # 🏢 集合住宅計分邏輯
@@ -135,27 +120,11 @@ def score_neighbors(df, target_age, is_first_floor_checked, target_area=0, b_typ
             elif year_diff <= 3: score += settings.SCORE_APT["DEAL_3_YEAR"]
             else: score += settings.SCORE_APT["DEAL_OVER_3"]
             
-            # 2. 屋齡差異
-            if age_diff <= 2: score += settings.SCORE_APT["AGE_DIFF_2"]
-            elif age_diff <= 5: score += settings.SCORE_APT["AGE_DIFF_5"]
-            elif age_diff <= 10: score += settings.SCORE_APT["AGE_DIFF_10"]
-            else: score += settings.SCORE_APT["AGE_BASE"]
-            
             # 3. 距離計分
             if dist_m <= 100: score += settings.SCORE_APT["DIST_100M"]
             elif dist_m <= 500: score += settings.SCORE_APT["DIST_500M"]
             else: score += settings.SCORE_APT["DIST_BASE"]
             
-            # 4. 坪數差異
-            if target_area > 0 and case_area > 0:
-                diff_ratio = abs(case_area - target_area) / target_area
-                if diff_ratio <= 0.10: score += settings.SCORE_APT["AREA_DIFF_10"]
-                elif diff_ratio <= 0.20: score += settings.SCORE_APT["AREA_DIFF_20"]
-                elif diff_ratio <= 0.30: score += settings.SCORE_APT["AREA_DIFF_30"]
-                else: score += settings.SCORE_APT["AREA_BASE"]
-            else:
-                score += settings.SCORE_APT["AREA_BASE"]
-
         return score
 
     df['total_score'] = df.apply(calc_score, axis=1)
