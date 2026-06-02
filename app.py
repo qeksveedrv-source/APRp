@@ -797,21 +797,23 @@ elif res is not None:
         use_container_width=True
     )
 
-    # 5. 【A4 列印版 - 繞過過濾法】：將被刪除的資料轉換為純 HTML，強制注入雙刪除線
+    # 5. 【A4 列印版 - 繞過過濾法】
     deleted_indices = edited_df[edited_df['刪除'] == True].index.tolist()
-    print_df = final_table_df.drop(columns=['刪除'], errors='ignore').copy()
     
-    # 針對每一格資料，如果該列已被刪除，則用 <span> 包裹並加入強力 inline CSS 單刪除線與粗體
+    # 🌟 核心修正：先將 print_df 所有欄位強制轉為 object (字串) 型態
+    # 這樣後面寫入 HTML 字串時，就不會觸發 TypeError
+    print_df = final_table_df.drop(columns=['刪除'], errors='ignore').astype(str).copy()
+    
+    # 針對每一格資料，如果該列已被刪除，則用 <span> 包裹
     for idx in deleted_indices:
         if idx in print_df.index:
             for col in print_df.columns:
                 val = print_df.at[idx, col]
                 # 這裡強制寫入 HTML，改為「單刪除線(加粗) + 文字粗體」
-                print_df.at[idx, col] = f"<span style='text-decoration: line-through; text-decoration-style: solid; text-decoration-color: #ff4b4b; text-decoration-thickness: 2px; color: #a0a0a0; font-weight: bold; font-style: italic;'>{val}</span>"
+                print_df.at[idx, col] = f"<span style='text-decoration: line-through; text-decoration-style: solid; text-decoration-color: #ff4b4b; text-decoration-thickness: 3px; color: #a0a0a0; font-weight: bold; font-style: italic;'>{val}</span>"
 
-    # 將 DataFrame 轉為 HTML (escape=False 確保我們的 <span> 不會被當成純文字印出來)
+    # 將 DataFrame 轉為 HTML (escape=False 確保我們的 <span> 不會被過濾)
     html_table = print_df.to_html(escape=False, classes="print-only-table")
-    # 將這個 HTML 表格用 div 包起來輸出到畫面上
     st.markdown(f'<div class="print-only-table-wrapper">{html_table}</div>', unsafe_allow_html=True)
 
     # 6. 【後台重算機制】：監測勾選變動，即時重新推算合理行情區間
