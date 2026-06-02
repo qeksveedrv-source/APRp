@@ -256,7 +256,14 @@ if run_btn:
                 'addr': addr, 'lat': loc.latitude, 'lon': loc.longitude,
                 'top_10': top_10, 'eval_text': eval_text, 'eval_mode': eval_mode,
                 'b_type': b_type, 'build_area': build_area,
-                'valuation_msg': valuation_msg
+                'valuation_msg': valuation_msg,
+                'land_price': land_price if b_type == "透天厝" else None,
+                'material_val': material_val if b_type == "透天厝" else None,
+                
+                'low_bound': low if b_type == "透天厝" else low_up,
+                'high_bound': high if b_type == "透天厝" else high_up,
+                'target_data': target_data if b_type == "透天厝" else None,
+                'excluded_labels': []
             }
         else:
             st.session_state.valuation_results = "empty"
@@ -339,12 +346,50 @@ elif res is not None:
     # 初始化基本地圖
     m = folium.Map(location=[res['lat'], res['lon']], zoom_start=15)
 
-    # 標記紅色「目標物件」
+    # ================= 強制將列印 CSS 注入地圖內部 =================
+    m.get_root().header.add_child(folium.Element("""
+        <style>
+        /* 網頁上：為標記加上一點陰影增加立體感 */
+        .beautify-marker {
+            box-shadow: 1px 2px 5px rgba(0,0,0,0.5) !important;
+        }
+        @media print {
+            /* 1. 強制瀏覽器印出標記的「背景顏色」(解決透明問題的核心) */
+            * {
+                -webkit-print-color-adjust: exact !important;
+                print-color-adjust: exact !important;
+            }
+            
+            /* 2. 🌟 修復標記消失：絕對不能使用 transform，改用 zoom 進行安全放大，並強制顯示 */
+            .leaflet-marker-icon {
+                display: block !important;
+                opacity: 1 !important;
+                zoom: 1.2 !important; /* 安全地放大 1.2 倍，不會破壞原本的經緯度定位 */
+            }
+            
+            /* 3. 將地圖底圖對比度調高，讓標記更清晰 */
+            .leaflet-tile { 
+                filter: contrast(1.2) brightness(0.9) !important; 
+            }
+        }
+        </style>
+    """))
+
+    # 標記紅色「目標物件」- 改用純 CSS 的 BeautifyIcon，確保列印絕對不掉色
+    target_icon = BeautifyIcon(
+        icon_shape='circle',         # 改用圓形，與參考物件的設計語彙統一
+        number='★',                  # 使用純文字的星星符號，保證列印時不用讀取字型也不會消失
+        text_color='white',
+        background_color='#E53935',  # 醒目的鮮紅色
+        border_color='#B71C1C',      # 深紅色厚邊框，增加列印對比度
+        inner_icon_style='font-size: 20px; margin-top: -2px;' # 將星星放大並微調置中
+    )
+
     folium.Marker(
         [res['lat'], res['lon']],
         popup=f"<b>⭐ 目標物件</b><br>{res['addr']}",
         tooltip="目標物件",
-        icon=folium.Icon(color="red", icon="home", prefix='fa')
+        icon=target_icon
     ).add_to(m)
 
     top_10_df = res['top_10'].copy()
@@ -382,13 +427,14 @@ elif res is not None:
             💰 {price_info}
             """
 
+            # ================= 🌟 優化參考標記設計 =================
             b_icon = BeautifyIcon(
                 icon_shape='circle',
                 number=str(label_idx),
                 text_color='white',
                 background_color='#1f77b4',
-                border_color='#1f77b4',
-                inner_icon_style='font-weight: bold; font-size: 13px; margin-top: 2px;'
+                border_color='#073863',  # 將邊框顏色調深到深藍色，增加列印對比
+                inner_icon_style='font-weight: bold; font-size: 16px; margin-top: 1px;' # 字體從 13px 放大到 16px
             )
 
             folium.Marker(
@@ -416,7 +462,7 @@ elif res is not None:
     # =========================================================================
     
     # 🚀 調整 1：設定地圖與基本資料之間的精確間距
-    st.markdown("<div style='margin-top: 1.2cm;'></div>", unsafe_allow_html=True)
+    st.markdown("<div style='margin-top: 0.8cm;'></div>", unsafe_allow_html=True)
     st.write("### 📋 目標物件基本資料與行情估算")
     
     # 🟢 保持強健的動態變數偵測機制
@@ -521,6 +567,7 @@ elif res is not None:
     final_build_str = f"{display_build} 坪"
 
     # 使用 Streamlit 欄位配合客製化 CSS 容器，確保字體放大到 20px
+    # ================= 第一排基本資料 =================
     detail_cols = st.columns(4)
     with detail_cols[0]:
         st.markdown(f"<div style='font-size: 20px; color: inherit;'>🏢 <b>建物型態</b>：{res.get('b_type', '未知')}</div>", unsafe_allow_html=True)
@@ -531,8 +578,22 @@ elif res is not None:
     with detail_cols[3]:
         st.markdown(f"<div style='font-size: 20px; color: inherit;'>📐 <b>建物面積</b>：{final_build_str}</div>", unsafe_allow_html=True)
 
+    # ================= 第二排追加資料 (僅透天厝) =================
+    if res.get('b_type') == "透天厝":
+        display_land_price = res.get('land_price', 14.0)
+        display_material = res.get('material_val', '鋼筋混凝土')
+        
+        detail_cols_row2 = st.columns(4)
+        # 前面兩個欄位 detail_cols_row2[0] 與 [1] 不放東西直接留白
+        
+        with detail_cols_row2[2]:
+            st.markdown(f"<div style='font-size: 20px; color: inherit; padding-top: 8px;'>💲 <b>土地行情</b>：{display_land_price} 萬/坪</div>", unsafe_allow_html=True)
+        with detail_cols_row2[3]:
+            st.markdown(f"<div style='font-size: 20px; color: inherit; padding-top: 8px;'>🧱 <b>建材</b>：{display_material}</div>", unsafe_allow_html=True)
+
+
     # 🚀 調整 3：設定基本資料與下方近鄰成交參考紀錄表之間的精確間距
-    st.markdown("<div style='margin-top: 1.2cm;'></div>", unsafe_allow_html=True)
+    st.markdown("<div style='margin-top: 0.5cm;'></div>", unsafe_allow_html=True)
             
     # =========================================================================
     # 【最下面】顯示近鄰成交參考紀錄表
@@ -670,11 +731,113 @@ elif res is not None:
         </style>
     """, unsafe_allow_html=True)
 
-    # 將「標記」設為表格索引
+    # ================= 🌟 動態刪除（行情重算）與 列印保留雙線 核心邏輯 =================
+    # 1. 確保源頭的 res 包含完整的標記名稱，以供重算與對照
+    res['top_10']['標記'] = map_labels
+    
+    # 2. 建立包含「刪除」勾選狀態的完整 DataFrame (精準安插在「門牌」前面)
+    cols = list(final_table_df.columns)
+    if '門牌' in cols:
+        cols.insert(cols.index('門牌'), '刪除')
+        # 從 Session State 讀取已被標記為刪除的標記清單
+        final_table_df['刪除'] = final_table_df['標記'].isin(res.get('excluded_labels', []))
+        final_table_df = final_table_df[cols]
+
+    # 將標記設為表格索引
     final_table_df = final_table_df.set_index('標記')
 
-    # 使用 st.table() 渲染 (此時會完美套用上面的雙重框線 CSS)
-    st.table(final_table_df)
+    # 3. 雙軌顯示 CSS：日常網頁操作顯示互動表；點擊列印 PDF 時自動切換為帶有刪除線的「純 HTML」靜態表
+    st.markdown("""
+        <style>
+        @media screen { 
+            /* 螢幕上隱藏我們等下要產生的純 HTML 列印專用表 */
+            .print-only-table-wrapper { display: none !important; }
+        }
+        @media print { 
+            /* 列印時隱藏互動式 Dataframe，顯示純 HTML 表 */
+            [data-testid="stDataFrame"] { display: none !important; } 
+            .print-only-table-wrapper { display: block !important; } 
+        }
+        
+        /* 為繞過 Streamlit 過濾的純 HTML 表格重新套用工整的框線樣式 */
+        table.print-only-table {
+            width: 100% !important;
+            border-collapse: collapse !important;
+            border: 2px solid #000000 !important;
+            background-color: #FFFFFF !important;
+        }
+        table.print-only-table th {
+            font-size: 16px !important; 
+            font-weight: bold !important;
+            text-align: center !important;
+            background-color: #F0F0F0 !important;
+            border-bottom: 2px solid #000000 !important;
+            border-right: 1px solid #444444 !important;
+            padding: 8px !important;
+            color: #000000 !important;
+            -webkit-print-color-adjust: exact !important;
+        }
+        table.print-only-table td {
+            font-size: 16px !important; 
+            text-align: center !important;
+            border: 1px solid #444444 !important;
+            padding: 8px !important;
+            color: #000000 !important;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+
+    # 4. 【網頁操作版】：互動式 Data Editor (勾選後立即觸發行情重算)
+    edited_df = st.data_editor(
+        final_table_df,
+        column_config={
+            "刪除": st.column_config.CheckboxColumn("刪除", help="勾選後排除此筆，系統將自動重算")
+        },
+        disabled=[col for col in final_table_df.columns if col != '刪除'],
+        use_container_width=True
+    )
+
+    # 5. 【A4 列印版 - 繞過過濾法】：將被刪除的資料轉換為純 HTML，強制注入雙刪除線
+    deleted_indices = edited_df[edited_df['刪除'] == True].index.tolist()
+    print_df = final_table_df.drop(columns=['刪除'], errors='ignore').copy()
+    
+    # 針對每一格資料，如果該列已被刪除，則用 <span> 包裹並加入強力 inline CSS 單刪除線與粗體
+    for idx in deleted_indices:
+        if idx in print_df.index:
+            for col in print_df.columns:
+                val = print_df.at[idx, col]
+                # 這裡強制寫入 HTML，改為「單刪除線(加粗) + 文字粗體」
+                print_df.at[idx, col] = f"<span style='text-decoration: line-through; text-decoration-style: solid; text-decoration-color: #ff4b4b; text-decoration-thickness: 2px; color: #a0a0a0; font-weight: bold; font-style: italic;'>{val}</span>"
+
+    # 將 DataFrame 轉為 HTML (escape=False 確保我們的 <span> 不會被當成純文字印出來)
+    html_table = print_df.to_html(escape=False, classes="print-only-table")
+    # 將這個 HTML 表格用 div 包起來輸出到畫面上
+    st.markdown(f'<div class="print-only-table-wrapper">{html_table}</div>', unsafe_allow_html=True)
+
+    # 6. 【後台重算機制】：監測勾選變動，即時重新推算合理行情區間
+    if deleted_indices != res.get('excluded_labels', []):
+        res['excluded_labels'] = deleted_indices
+        
+        # 篩選出「未被勾選刪除」的有效近鄰案例進行重新估價
+        active_pool = res['top_10'][~res['top_10']['標記'].isin(deleted_indices)].copy()
+        
+        if len(active_pool) > 0:
+            if res.get('b_type') == "透天厝" and res.get('target_data'):
+                new_low, new_high, _ = RealEstateValuator.run_detached_valuation(
+                    res['target_data'], active_pool, res.get('land_price', 14.0)
+                )
+            else:
+                new_low, new_high = RealEstateValuator.run_apartment_valuation(active_pool)
+            
+            # 將重新計算過後的行情數據覆寫回 session_state
+            res['low_bound'] = new_low
+            res['high_bound'] = new_high
+        else:
+            # 防呆機制：若 10 筆參考紀錄全被勾選刪除，則行情歸零
+            res['low_bound'], res['high_bound'] = 0, 0 
+        
+        st.session_state.valuation_results = res
+        st.rerun()  # 強制重新渲染，使畫面上方的估價結果即時同步！
 
     # =========================================================================
     # 在表格下方加入：透天厝訪價邏輯說明
@@ -687,7 +850,7 @@ elif res is not None:
                 font-size: 13px; 
                 color: #333333; 
                 background-color: #F8F9FA; 
-                padding: 12px 18px; 
+                padding: 15px 20px; 
                 border-radius: 6px; 
                 border: 1px solid #DDDDDD; 
                 line-height: 1.6;
@@ -695,7 +858,7 @@ elif res is not None:
             }
             @media print {
                 .algo-box {
-                    font-size: 11px !important; /* 列印時字體稍微縮小以節省空間 */
+                    font-size: 14px !important; /* 列印時字體放大 */
                     border: 1px solid #888888 !important;
                     background-color: #F8F9FA !important;
                     -webkit-print-color-adjust: exact !important;
@@ -706,14 +869,16 @@ elif res is not None:
             </style>
             
             <div class="algo-box">
-                <b style="font-size: 15px; color: #000;">💡 系統估價邏輯說明：透天厝 (成本法折舊 ＋ 市場溢價調整 ＋ 加權中位數) 複合型演算法</b><br>
-                <div style="display: flex; gap: 20px; margin-top: 8px;">
+                <b style="font-size: 18px; color: #000;">💡 系統估價邏輯說明：透天厝 (成本法折舊 ＋ 市場溢價調整 ＋ 人工輔助刪除) 複合型演算法</b><br>
+                <div style="display: flex; gap: 20px; margin-top: 10px;">
                     <div style="flex: 1;">
                         <b>第一階段：權重計分與案例篩選</b> (於周邊 1 公里內搜尋並為歷史案例打分)<br>
                         • <b>計分規則</b>：<br>
                         &nbsp;&nbsp;1. <b>交易年份</b>：1年內加6分、2年內加2分、3年內加1分、逾3年扣3分。<br>
-                        &nbsp;&nbsp;3. <b>距離遠近</b>：250m內加4分、500m內加3分、逾500m加1分。<br>
-                        • <b>篩選門檻</b>：權重未達 之案例直接剔除不列入參考，確保合理性。
+                        &nbsp;&nbsp;2. <b>距離遠近</b>：250m內加4分、500m內加3分、逾500m加1分。<br>
+                        • <b>選案策略</b>：同門牌去重複，保留 5 筆最新 + 5 筆距離最近」的紀錄。<br>
+                        • <b>實登備註</b>：'親友', '急買', '急賣', '員工', '關係人', '借名', '畸零地', '保留地'。<br>
+                        • <b>上述特殊交易</b>：資料庫轉檔過程，已篩選剃除。<br>
                     </div>
                     <div class="algo-column" style="flex: 1.1;">
                         <b>第二階段：估價引擎運算</b><br>
@@ -722,7 +887,7 @@ elif res is not None:
                         &nbsp;&nbsp;2. <b>剔除負數</b>：溢價係數為負者不具參考價值，直接排除。<br>
                         &nbsp;&nbsp;3. <b>次高次低平均</b>：排除最高與最低值，取次高與次低係數平均。<br>
                         &nbsp;&nbsp;4. 預測中心價 = 標的總成本 × (1 + 平均認定溢價係數)。<br>
-                        • <b>合理區間</b>：將預測中心價乘上 ±6%，得出最終合理行情區間。
+                        • <b>合理區間</b>：中心價 ±6% 認定合理行情區間。另需人工判斷刪除偏離紀錄。
                     </div>
                 </div>
             </div>
@@ -735,10 +900,10 @@ elif res is not None:
             <style>
             /* 針對說明區塊的列印優化 */
             .algo-box {
-                font-size: 13px; 
+                font-size: 16px; 
                 color: #333333; 
                 background-color: #F8F9FA; 
-                padding: 12px 18px; 
+                padding: 15px 20px; 
                 border-radius: 6px; 
                 border: 1px solid #DDDDDD; 
                 line-height: 1.6;
@@ -751,12 +916,12 @@ elif res is not None:
             .parking-mini-table {
                 width: 100%;
                 border-collapse: collapse;
-                margin-top: 6px;
-                font-size: 12px;
+                margin-top: 8px;
+                font-size: 14px;
             }
             .parking-mini-table th, .parking-mini-table td {
                 border: 1px solid #DDDDDD !important;
-                padding: 4px 6px !important;
+                padding: 6px 8px !important;
                 text-align: center !important;
                 color: #000000 !important;
             }
@@ -766,7 +931,7 @@ elif res is not None:
             }
             @media print {
                 .algo-box {
-                    font-size: 11px !important; 
+                    font-size: 14px !important; 
                     border: 1px solid #888888 !important;
                     background-color: #F8F9FA !important;
                     -webkit-print-color-adjust: exact !important;
@@ -783,8 +948,8 @@ elif res is not None:
             </style>
             
             <div class="algo-box">
-                <b style="font-size: 15px; color: #000;">💡 系統估價邏輯說明：集合住宅 (實質單價拆算 ＋ 相似度權重加權)</b><br>
-                <div style="display: flex; gap: 20px; margin-top: 8px;">
+                <b style="font-size: 18px; color: #000;">💡 系統估價邏輯說明：集合住宅 (實質單價拆算 ＋ 相似度權重加權)</b><br>
+                <div style="display: flex; gap: 20px; margin-top: 10px;">
                     <div class="algo-column" style="flex: 1.1;">
                         <b>第一階段：權重計分與案例篩選</b> (周邊 1 公里內)<br>
                         • <b>計分規則</b>：<br>
@@ -796,7 +961,7 @@ elif res is not None:
                         <b>第二階段：估價引擎運算</b><br>
                         • <b>車位拆算</b>：剔除車位價格與面積，還原純房屋的「實質單價 (萬/坪)」。<br>
                         • <b>加權平均單價</b>：將 10 筆案例的實質單價，依照第一階段算出的「總分」進行加權平均。<br>
-                        &nbsp;&nbsp;<span style="color: #555; font-size: 11px;">(公式：Σ(各案例實質單價 × 各案例總分) / Σ(所有案例總分) )</span><br>
+                        &nbsp;&nbsp;<span style="color: #555; font-size: 14px;">(公式：Σ(各案例實質單價 × 各案例總分) / Σ(所有案例總分) )</span><br>
                         • <b>預測中心總價</b>：加權平均單價 × 目標物件建物面積 (不含車位)。<br>
                         • <b>合理區間</b>：將預測中心價乘上 ±6%，得出最終合理行情區間。
                     </div>
