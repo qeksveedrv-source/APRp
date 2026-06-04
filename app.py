@@ -182,7 +182,7 @@ if run_btn:
             # 2. 權重計分
             scored_pool = score_neighbors(raw_pool, age, is_first_floor, build_area, b_type)
             
-            # --- 絕對分數門檻 (>=10分) ---
+            # --- 絕對分數門檻---
             final_pool = scored_pool[scored_pool['total_score'] >= settings.MIN_TOTAL_SCORE].copy()
             
             # 依照分數由高到低排序，最多取前 10 筆作為估價基準
@@ -735,20 +735,24 @@ elif res is not None:
     # 1. 確保源頭的 res 包含完整的標記名稱，以供重算與對照
     res['top_10']['標記'] = map_labels
     
-    # 2. 建立包含「刪除」勾選狀態的完整 DataFrame (精準安插在「門牌」前面)
-    cols = list(final_table_df.columns)
-    if '門牌' in cols:
-        cols.insert(cols.index('門牌'), '刪除')
-        # 從 Session State 讀取已被標記為刪除的標記清單
-        final_table_df['刪除'] = final_table_df['標記'].isin(res.get('excluded_labels', []))
-        final_table_df = final_table_df[cols]
-
-    # 將標記設為表格索引
+    # 2. 建立包含「刪除」勾選狀態，新增的欄位會自動安穩地排在「最右邊」
+    final_table_df['刪除'] = final_table_df['標記'].isin(res.get('excluded_labels', []))
+    
+    # 🌟 恢復最穩定的作法：將「標記」設為表格索引，Streamlit 會自動把它鎖在最左邊
     final_table_df = final_table_df.set_index('標記')
 
-    # 3. 雙軌顯示 CSS：日常網頁操作顯示互動表；點擊列印 PDF 時自動切換為帶有刪除線的「純 HTML」靜態表
+    # 3. 雙軌顯示 CSS：網頁互動表放大與置中；列印 PDF 切換純 HTML
     st.markdown("""
         <style>
+        /* 網頁版：放大字體並置中 */
+        .stDataEditor [data-testid="stDataEditor"] {
+            font-size: 18px !important;
+        }
+        .stDataEditor td, .stDataEditor th {
+            text-align: center !important;
+            vertical-align: middle !important;
+        }
+
         @media screen { 
             /* 螢幕上隱藏我們等下要產生的純 HTML 列印專用表 */
             .print-only-table-wrapper { display: none !important; }
@@ -787,36 +791,44 @@ elif res is not None:
         </style>
     """, unsafe_allow_html=True)
 
-    # 4. 【網頁操作版】：互動式 Data Editor (勾選後立即觸發行情重算)
+    # 4. 【網頁操作版】：互動式 Data Editor 
     edited_df = st.data_editor(
         final_table_df,
         column_config={
-            "刪除": st.column_config.CheckboxColumn("刪除", help="勾選後排除此筆，系統將自動重算")
+            # 刪除欄位在最右邊，使用 small 即可完美呈現小勾選框
+            "刪除": st.column_config.CheckboxColumn("刪除", help="勾選後排除此筆，系統將自動重算", width="small")
         },
         disabled=[col for col in final_table_df.columns if col != '刪除'],
         use_container_width=True
     )
 
-    # 5. 【A4 列印版 - 繞過過濾法】
-    deleted_indices = edited_df[edited_df['刪除'] == True].index.tolist()
-    
-    # 🌟 核心修正：先將 print_df 所有欄位強制轉為 object (字串) 型態
-    # 這樣後面寫入 HTML 字串時，就不會觸發 TypeError
+    # 🌟 恢復最直覺且絕對不會出錯的取值法：透過 Index 抓取
+    if '刪除' in edited_df.columns:
+        deleted_indices = edited_df[edited_df['刪除'] == True].index.tolist()
+    else:
+        deleted_indices = []
+
+    # 5. 【A4 列印版 - 繞過過濾法】：將被刪除的資料轉換為純 HTML，強制注入單紅線粗體刪除線
     print_df = final_table_df.drop(columns=['刪除'], errors='ignore').astype(str).copy()
     
-    # 針對每一格資料，如果該列已被刪除，則用 <span> 包裹
-    for idx in deleted_indices:
-        if idx in print_df.index:
+    # 🌟 解決 HTML 表頭錯位的關鍵：將「標記」從索引還原為一般的第一個欄位
+    print_df = print_df.reset_index()
+    
+    # 針對每一格資料，如果該列(標記名稱)已被刪除，則用 <span> 包裹並加入 inline CSS 
+    for row_idx in print_df.index:
+        label = print_df.at[row_idx, '標記']
+        if label in deleted_indices:
             for col in print_df.columns:
-                val = print_df.at[idx, col]
-                # 這裡強制寫入 HTML，改為「單刪除線(加粗) + 文字粗體」
-                print_df.at[idx, col] = f"<span style='text-decoration: line-through; text-decoration-style: solid; text-decoration-color: #ff4b4b; text-decoration-thickness: 3px; color: #a0a0a0; font-weight: bold; font-style: italic;'>{val}</span>"
+                val = print_df.at[row_idx, col]
+                print_df.at[row_idx, col] = f"<span style='text-decoration: line-through; text-decoration-style: solid; text-decoration-color: #ff4b4b; text-decoration-thickness: 1px; color: #a0a0a0; font-weight: bold; font-style: italic;'>{val}</span>"
 
-    # 將 DataFrame 轉為 HTML (escape=False 確保我們的 <span> 不會被過濾)
-    html_table = print_df.to_html(escape=False, classes="print-only-table")
+    # 將 DataFrame 轉為 HTML，加上 index=False 就不會產生多餘的空白列與雙層表頭！
+    html_table = print_df.to_html(escape=False, classes="print-only-table", index=False)
     st.markdown(f'<div class="print-only-table-wrapper">{html_table}</div>', unsafe_allow_html=True)
 
+    # =========================================================================
     # 6. 【後台重算機制】：監測勾選變動，即時重新推算合理行情區間
+    # =========================================================================
     if deleted_indices != res.get('excluded_labels', []):
         res['excluded_labels'] = deleted_indices
         
@@ -877,7 +889,7 @@ elif res is not None:
                         <b>第一階段：權重計分與案例篩選</b> (於周邊 1 公里內搜尋並為歷史案例打分)<br>
                         • <b>計分規則</b>：<br>
                         &nbsp;&nbsp;1. <b>交易年份</b>：1年內加6分、2年內加2分、3年內加1分、逾3年扣3分。<br>
-                        &nbsp;&nbsp;2. <b>距離遠近</b>：250m內加4分、500m內加3分、逾500m加1分。<br>
+                        &nbsp;&nbsp;2. <b>距離遠近</b>：50m內加4分、250m內加3分、500m內加2分、逾500m加1分。<br>
                         • <b>選案策略</b>：同門牌去重複，保留 5 筆最新 + 5 筆距離最近」的紀錄。<br>
                         • <b>實登備註</b>：'親友', '急買', '急賣', '員工', '關係人', '借名', '畸零地', '保留地'。<br>
                         • <b>上述特殊交易</b>：資料庫轉檔過程，已篩選剃除。<br>
@@ -955,9 +967,11 @@ elif res is not None:
                     <div class="algo-column" style="flex: 1.1;">
                         <b>第一階段：權重計分與案例篩選</b> (周邊 1 公里內)<br>
                         • <b>計分規則</b>：<br>
-                        &nbsp;&nbsp;1. <b>交易年份</b>：1年內加7分、2年內加5分、3年內加3分、逾3年扣3分。<br>
-                        &nbsp;&nbsp;3. <b>距離遠近</b>：100m內加3分、500m內加2分、逾500m加1分。<br>
-                        • <b>篩選門檻</b>：權重未達 之案例直接剔除不列入參考，確保合理性。
+                        &nbsp;&nbsp;1. <b>交易年份</b>：1年內加6分、2年內加2分、3年內加1分、逾3年扣3分。<br>
+                        &nbsp;&nbsp;2. <b>距離遠近</b>：50m內加4分、250m內加3分、500m內加2分、逾500m加1分。<br>
+                        &nbsp;&nbsp;3. <b>屋齡差距</b>：同屋齡加5分、屋齡差 10 年內加3分、屋齡差 11年以上加1分。<br>
+                        • <b>實登備註</b>：'親友', '急買', '急賣', '員工', '關係人', '借名', '畸零地', '保留地'。<br>
+                        • <b>上述特殊交易</b>：資料庫轉檔過程，已篩選剃除。<br>
                     </div>
                     <div class="algo-column" style="flex: 1.1;">
                         <b>第二階段：估價引擎運算</b><br>

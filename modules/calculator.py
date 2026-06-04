@@ -17,7 +17,7 @@ class RealEstateValuator:
         採用在地金融機構（信合社）實戰比例階梯表
         特色：直接讀取 settings 既有的 RC/磚造 基準造價，套用前快後慢階梯折舊。
         """
-        # 1. 根據材質自動判斷基準造價 (直接沿用您原本的 settings 設定)
+        # 1. 根據材質自動判斷基準造價 
         material = str(material)
         if "鋼筋混凝土" in material and "磚" not in material:
             base = settings.BUILD_COST_RC      # RC造價

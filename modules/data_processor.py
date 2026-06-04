@@ -6,7 +6,7 @@ from datetime import datetime
 
 # 引入自訂模組
 from modules.utils import haversine
-from modules import settings  # 引入剛建立的設定檔
+from modules import settings  # 引入設定檔
 
 def get_neighbor_data(conn, t_lat, t_lon, b_type, t_addr=""):
     """從資料庫抓取初步候選池，加入 Bounding Box 邊界框與街路排他邏輯"""
@@ -39,17 +39,12 @@ def get_neighbor_data(conn, t_lat, t_lon, b_type, t_addr=""):
     # 同門牌多筆紀錄，直接在這裡只保留「時間最新」的一筆
     # ==========================================
     if not df.empty:
-        # 1. 確保交易日期格式一致以便排序
         df['deal_date'] = df['deal_date'].astype(str)
-        
-        # 2. 依照交易日期由新到舊排序
         df = df.sort_values('deal_date', ascending=False)
-        
-        # 3. 剔除重複的門牌，保留第一筆 (即最新的一筆)，完全不計算平均！
         df = df.drop_duplicates(subset=['address'], keep='first').copy()
     # ==========================================
 
-    # 後續的距離計算 (保持不變)
+    # 後續的距離計算
     df['dist'] = df.apply(
         lambda r: haversine(t_lat, t_lon, float(r['Response_Y']), float(r['Response_X'])), 
         axis=1
@@ -61,7 +56,7 @@ def get_neighbor_data(conn, t_lat, t_lon, b_type, t_addr=""):
     return target_df
 
 def score_neighbors(df, target_age, is_first_floor_checked, target_area=0, b_type=""):
-    """權重計分邏輯 (透天與集合住宅雙軌計分)"""
+    """權重計分邏輯 (透天與集合住宅獨立雙軌計分)"""
     if df.empty: return df
 
     if not is_first_floor_checked:
@@ -85,14 +80,9 @@ def score_neighbors(df, target_age, is_first_floor_checked, target_area=0, b_typ
             row_age = current_roc_year - build_year
         except:
             row_age = target_age
+            
         age_diff = abs(row_age - target_age)
-        
         dist_m = row.get('dist', 999) * 1000
-        
-        try:
-            case_area = float(row['total_build_area']) * settings.SQM_TO_PING
-        except:
-            case_area = 0
 
         # ==========================================
         # 🏠 透天厝計分邏輯
@@ -104,8 +94,8 @@ def score_neighbors(df, target_age, is_first_floor_checked, target_area=0, b_typ
             elif year_diff <= 3: score += settings.SCORE_HOUSE["DEAL_3_YEAR"]
             else: score += settings.SCORE_HOUSE["DEAL_OVER_3"]
             
-            # 3. 距離計分
-            if dist_m <= 100: score += settings.SCORE_HOUSE["DIST_100M"]
+            # 2. 距離計分
+            if dist_m <= 50: score += settings.SCORE_HOUSE["DIST_50M"]
             elif dist_m <= 250: score += settings.SCORE_HOUSE["DIST_250M"]
             elif dist_m <= 500: score += settings.SCORE_HOUSE["DIST_500M"]
             else: score += settings.SCORE_HOUSE["DIST_BASE"]
@@ -120,10 +110,18 @@ def score_neighbors(df, target_age, is_first_floor_checked, target_area=0, b_typ
             elif year_diff <= 3: score += settings.SCORE_APT["DEAL_3_YEAR"]
             else: score += settings.SCORE_APT["DEAL_OVER_3"]
             
-            # 3. 距離計分
-            if dist_m <= 100: score += settings.SCORE_APT["DIST_100M"]
+            # 2. 距離計分
+            if dist_m <= 50: score += settings.SCORE_APT["DIST_50M"]
+            elif dist_m <= 250: score += settings.SCORE_APT["DIST_250M"]
             elif dist_m <= 500: score += settings.SCORE_APT["DIST_500M"]
             else: score += settings.SCORE_APT["DIST_BASE"]
+            
+            # 3. 屋齡差距計分 (使用獨立參數與範圍判定)
+            if age_diff == 0:
+                score += settings.SCORE_APT["AGE_DIFF_0"]
+            elif age_diff <= 10:
+                score += settings.SCORE_APT["AGE_DIFF_10"]
+            else: score += settings.SCORE_APT["AGE_DIFF_11"]
             
         return score
 
