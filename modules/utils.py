@@ -93,3 +93,29 @@ def calculate_age_from_roc(roc_date_str):
         return max(current_roc_year - build_year, 0)
     except:
         return None
+def filter_detached_top10(df):
+    """
+    透天厝專用選案策略：
+    1. 同門牌若有多筆成交，只保留時間最近的一筆。
+    2. 選出 5 筆最新成交。
+    3. 從剩餘名單中選出 5 筆距離最近的案例。
+    4. 合併為最多 10 筆參考紀錄。
+    """
+    if df.empty:
+        return df
+        
+    # 依照日期排序，去除重複門牌 (保留最新)
+    df_sorted = df.sort_values('deal_date', ascending=False)
+    merged_pool = df_sorted.drop_duplicates(subset=['address'], keep='first').copy()
+    merged_pool['sort_date'] = merged_pool['deal_date'].astype(str)
+
+    # 挑選 5 筆最新
+    latest_5 = merged_pool.sort_values('sort_date', ascending=False).head(5)
+    
+    # 挑選 5 筆最近 (必須排除已經被選入最新 5 筆的清單)
+    remaining = merged_pool[~merged_pool.index.isin(latest_5.index)]
+    closest_5 = remaining.sort_values('dist', ascending=True).head(5)
+
+    # 合併並回傳
+    top_10 = pd.concat([latest_5, closest_5])
+    return top_10

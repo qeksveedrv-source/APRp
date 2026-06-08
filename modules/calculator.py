@@ -53,55 +53,55 @@ class RealEstateValuator:
     # ==========================================
     @classmethod
     def run_detached_valuation(cls, target, df, land_price):
+        # 1. 計算目標物件基準成本
         target_build_cost = cls.calculate_cost(target['land'], target['build'], target['age'], target['material'])
         target_base_cost = (target['land'] * land_price) + target_build_cost
 
-        valid_rows = []
-        premiums = []
+        if df.empty:
+            return 0, 0, df
 
-        # 這裡的 df 是從 app.py 傳進來的完整 final_pool (最多30筆)，我們依序過濾
-        for idx, row in df.iterrows():
-            b_cost = cls.calculate_cost(row.get('land_area',0), row.get('total_build_area',0), row.get('calc_age',0), row.get('material',''))
-            case_base_cost = (row.get('land_area',0) * land_price) + b_cost
-            
-            p_wan = row['price'] / 10000.0
-            
-            if case_base_cost > 0:
-                premium_rate = (p_wan - case_base_cost) / case_base_cost
-            else:
-                premium_rate = 0.0
-                
-            # 只收錄溢價係數 >= 0 (非負數) 的案件
-            if premium_rate >= 0:
-                row_copy = row.copy()
-                row_copy['market_premium'] = round(premium_rate, 2)
-                valid_rows.append(row_copy)
-                premiums.append(premium_rate)
-                
-            # 只要收集滿 10 個正數樣本，就提早結束迴圈 (盡量維持 10 個)
-            if len(valid_rows) == 10:
-                break
-
-        # 將過濾後真正要顯示的有效資料轉回 DataFrame
-        filtered_top_10 = pd.DataFrame(valid_rows) if valid_rows else df.head(0)
+        df = df.copy() # 避免修改到原始資料的警告
         
-        # 採次高及次低的平均認定
+        # 批次計算所有案例的建物成本
+        df['b_cost'] = df.apply(lambda row: cls.calculate_cost(
+            row.get('land_area', 0), 
+            row.get('total_build_area', 0), 
+            row.get('calc_age', 0), 
+            row.get('material', '')
+        ), axis=1)
+        
+        # 批次計算總成本與每萬總價
+        df['case_base_cost'] = (df['land_area'] * land_price) + df['b_cost']
+        df['p_wan'] = df['price'] / 10000.0
+        
+        # 批次計算溢價係數 (使用 np.where 防呆，避免分母為 0 導致程式崩潰)
+        df['premium_rate'] = np.where(
+            df['case_base_cost'] > 0, 
+            (df['p_wan'] - df['case_base_cost']) / df['case_base_cost'], 
+            0.0
+        )
+
+        # 2. 剔除負數，只保留溢價係數 >= 0 的有效案件
+        valid_df = df[df['premium_rate'] >= 0].copy()
+        valid_df['market_premium'] = valid_df['premium_rate'].round(2)
+        
+        # 3. 採次高及次低的平均認定
+        premiums = valid_df['premium_rate'].tolist()
+        
         if len(premiums) >= 4:
             sorted_premiums = sorted(premiums)
-            second_lowest = sorted_premiums[1]       # 次低 (索引 1)
-            second_highest = sorted_premiums[-2]     # 次高 (倒數第 2 個，索引 -2)
-            final_premium_rate = (second_highest + second_lowest) / 2.0
+            final_premium_rate = (sorted_premiums[-2] + sorted_premiums[1]) / 2.0
         elif len(premiums) > 0:
             # 防呆：如果附近有效的案件少於4件，則直接取算術平均
             final_premium_rate = np.mean(premiums)
         else:
             final_premium_rate = 0.0
             
-        # 標的市值(萬元) = 總成本(萬元) × (1 + 最終認定的溢價係數)
+        # 4. 標的市值(萬元) = 總成本(萬元) × (1 + 最終認定的溢價係數)
         target_final_price = target_base_cost * (1 + final_premium_rate)
         
-        # 最終呈現 ±6% 之合理區間，並回傳「過濾好的 top_10」給 app.py 畫地圖跟表格
-        return target_final_price * settings.PRICE_LOWER_BOUND, target_final_price * settings.PRICE_UPPER_BOUND, filtered_top_10
+        # 回傳最終合理區間，並將「剔除負數後的 valid_df」傳回給 app.py 畫表
+        return target_final_price * settings.PRICE_LOWER_BOUND, target_final_price * settings.PRICE_UPPER_BOUND, valid_df
     
     # ==========================================
     # 3. 集合住宅估價引擎 (實質單價法 + 加權平均)

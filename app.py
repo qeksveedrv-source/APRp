@@ -215,16 +215,8 @@ if run_btn:
             # 選案與估價引擎運算 
             # =====================================================================
             if b_type == "透天厝":
-                # 透天分組邏輯：同門牌若有多筆成交，只保留時間最近的一筆
-                final_pool = final_pool.sort_values('deal_date', ascending=False)
-                merged_pool = final_pool.drop_duplicates(subset=['address'], keep='first').copy()
-                merged_pool['sort_date'] = merged_pool['deal_date'].astype(str)
-                
-                # 選案策略：5最新 + 5最近
-                latest_5 = merged_pool.sort_values('sort_date', ascending=False).head(5)
-                remaining = merged_pool[~merged_pool.index.isin(latest_5.index)]
-                closest_5 = remaining.sort_values('dist', ascending=True).head(5)
-                top_10 = pd.concat([latest_5, closest_5])
+                from modules.utils import filter_detached_top10
+                top_10 = filter_detached_top10(final_pool)
                 
                 valuation_msg = f"嚴格權重與距離篩選：共找到 {len(top_10)} 筆透天參考紀錄"
                 
@@ -446,8 +438,8 @@ elif res is not None:
     if len(all_coordinates) > 1:
         m.fit_bounds(all_coordinates)
 
-    # 渲染地圖至網頁上 (寬度略微調大以優化 A4 橫向佔比)
-    st_folium(m, width=1100, height=500, returned_objects=[])
+    # 渲染地圖至網頁上 (地圖大小)
+    st_folium(m, width=1100, height=600, returned_objects=[])
 
     # =========================================================================
     # 【地圖下面】顯示目標物件的資料與訪價區間 
@@ -797,7 +789,7 @@ elif res is not None:
     st.markdown(f'<div class="print-only-table-wrapper">{html_table}</div>', unsafe_allow_html=True)
 
     # =========================================================================
-    # 6. 【後台重算機制】：監測勾選變動，即時重新推算合理行情區間
+    # 【後台重算機制】：監測勾選變動，即時重新推算合理行情區間
     # =========================================================================
     if deleted_indices != res.get('excluded_labels', []):
         res['excluded_labels'] = deleted_indices
@@ -824,12 +816,12 @@ elif res is not None:
         st.rerun()  # 強制重新渲染，使畫面上方的估價結果即時同步！
 
     # =========================================================================
-    # 在表格下方加入：透天厝訪價邏輯說明
+    # 在表格下方加入：透天厝訪價邏輯說明 (網頁顯示，列印時隱藏)
     # =========================================================================
     if res.get('b_type') == "透天厝":
         st.markdown("""
             <style>
-            /* 針對說明區塊的列印優化 */
+            /* 針對說明區塊的網頁顯示優化 */
             .algo-box {
                 font-size: 13px; 
                 color: #333333; 
@@ -840,14 +832,10 @@ elif res is not None:
                 line-height: 1.6;
                 margin-top: 15px;
             }
+            /* 🚀 核心修正：列印 PDF 時，徹底隱藏這個區塊 */
             @media print {
                 .algo-box {
-                    font-size: 14px !important; /* 列印時字體放大 */
-                    border: 1px solid #888888 !important;
-                    background-color: #F8F9FA !important;
-                    -webkit-print-color-adjust: exact !important;
-                    print-color-adjust: exact !important;
-                    page-break-inside: avoid !important; /* 避免說明區塊被切頁 */
+                    display: none !important;
                 }
             }
             </style>
@@ -877,12 +865,12 @@ elif res is not None:
             </div>
         """, unsafe_allow_html=True)
     # =========================================================================
-    # 🌟 12. 集合住宅訪價邏輯說明（內嵌車位建議行情表）
+    # 12. 集合住宅訪價邏輯說明（內嵌車位建議行情表，列印時隱藏）
     # =========================================================================
     elif res.get('b_type') != "透天厝":
         st.markdown("""
             <style>
-            /* 針對說明區塊的列印優化 */
+            /* 針對說明區塊的網頁顯示優化 */
             .algo-box {
                 font-size: 16px; 
                 color: #333333; 
@@ -913,20 +901,11 @@ elif res is not None:
                 background-color: #E9ECEF !important;
                 font-weight: bold;
             }
+            
+            /* 🚀 核心修正：列印 PDF 時，徹底隱藏這個區塊 */
             @media print {
                 .algo-box {
-                    font-size: 14px !important; 
-                    border: 1px solid #888888 !important;
-                    background-color: #F8F9FA !important;
-                    -webkit-print-color-adjust: exact !important;
-                    print-color-adjust: exact !important;
-                    page-break-inside: avoid !important; 
-                }
-                .parking-mini-table th, .parking-mini-table td {
-                    border: 1px solid #666666 !important;
-                }
-                .parking-mini-table th {
-                    background-color: #EFEFEF !important;
+                    display: none !important; 
                 }
             }
             </style>
