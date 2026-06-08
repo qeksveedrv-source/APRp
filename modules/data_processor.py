@@ -1,7 +1,5 @@
 import pandas as pd
 import math
-import sqlite3
-import re  
 from datetime import datetime
 
 # 引入自訂模組
@@ -55,13 +53,15 @@ def get_neighbor_data(conn, t_lat, t_lon, b_type, t_addr=""):
     
     return target_df
 
-def score_neighbors(df, target_age, is_first_floor_checked, target_area=0, b_type=""):
+def score_neighbors(df, target_age, is_first_floor_checked, b_type=""):
     """權重計分邏輯 (透天與集合住宅獨立雙軌計分)"""
-    if df.empty: return df
+    if df.empty:
+        return df
 
-    if not is_first_floor_checked:
+    if not is_first_floor_checked and 'floor_level' in df.columns:
         df = df[~df['floor_level'].str.contains('一層', na=False)].copy()
-        if df.empty: return df
+        if df.empty:
+            return df
 
     current_roc_year = datetime.now().year - 1911
 

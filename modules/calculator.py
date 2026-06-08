@@ -4,7 +4,7 @@ from modules import settings
 
 class RealEstateValuator:
 
-    # 🌟 新增：缺少的計算成本函式 (這會被上方函式呼叫)
+    # 缺少的計算成本函式 (這會被上方函式呼叫)
     @staticmethod
     def calculate_cost(land_area, build_area, age, material):
         # 取得單坪折舊後的成本
@@ -49,7 +49,7 @@ class RealEstateValuator:
         return base * rate
 
     # ==========================================
-    # 🌟 2. 透天厝估價引擎 (次高與次低溢價平均法 + 負數剔除機制)
+    #  2. 透天厝估價引擎 (次高與次低溢價平均法 + 負數剔除機制)
     # ==========================================
     @classmethod
     def run_detached_valuation(cls, target, df, land_price):
@@ -71,7 +71,7 @@ class RealEstateValuator:
             else:
                 premium_rate = 0.0
                 
-            # 🌟 核心過濾機制：只收錄溢價係數 >= 0 (非負數) 的案件
+            # 只收錄溢價係數 >= 0 (非負數) 的案件
             if premium_rate >= 0:
                 row_copy = row.copy()
                 row_copy['market_premium'] = round(premium_rate, 2)
@@ -85,7 +85,7 @@ class RealEstateValuator:
         # 將過濾後真正要顯示的有效資料轉回 DataFrame
         filtered_top_10 = pd.DataFrame(valid_rows) if valid_rows else df.head(0)
         
-        # 🌟 最高跟最低不看，採次高及次低的平均認定
+        # 採次高及次低的平均認定
         if len(premiums) >= 4:
             sorted_premiums = sorted(premiums)
             second_lowest = sorted_premiums[1]       # 次低 (索引 1)
@@ -108,16 +108,12 @@ class RealEstateValuator:
     # ==========================================
     @classmethod
     def run_apartment_valuation(cls, df):
-        if df.empty:
+        # 如果資料為空，或者 app.py 沒有傳入算好的單價，直接回傳 0
+        if df.empty or 'unit_price_p' not in df.columns:
             return 0, 0
 
-        df['net_price'] = df['price'] - df['parking_price'].fillna(0)
-        df['net_area'] = df['total_build_area'] - df['parking_area'].fillna(0)
+        valid_df = df[df['unit_price_p'] > 0].dropna(subset=['unit_price_p']).copy()
         
-        df['net_area'] = df['net_area'].apply(lambda x: x if x > 0 else 1)
-        df['unit_price_p'] = (df['net_price'] / 10000) / df['net_area']
-        
-        valid_df = df.dropna(subset=['unit_price_p']).copy()
         if not valid_df.empty:
             weights = valid_df['total_score'].fillna(1).values
             prices = valid_df['unit_price_p'].values
@@ -128,21 +124,24 @@ class RealEstateValuator:
         return avg_unit_price * settings.PRICE_LOWER_BOUND, avg_unit_price * settings.PRICE_UPPER_BOUND
 
     # ==========================================
-    # 4. 車位資訊解析工具 (保持原樣)
+    # 4. 車位資訊解析工具 (修正坪數顯示錯誤)
     # ==========================================
     @staticmethod
     def get_berth_info(row):
         target_str = str(row.get('target_type', ''))
         p_type = str(row.get('parking_type', ''))
-        p_area = row.get('parking_area', 0)
+        p_area_sqm = row.get('parking_area', 0) # 這是原始的平方公尺
         
-        if '車位' not in target_str or pd.isna(p_area) or p_area == 0:
+        if '車位' not in target_str or pd.isna(p_area_sqm) or p_area_sqm == 0:
             return "無車位"
             
-        if any(keyword in p_type for keyword in ['坡道平面', '一樓平面']):
-            return f"平面 ({p_area:.1f}坪)"
+        # 將原始的「平方公尺」乘以設定檔常數，轉換為真實的「坪數」再做顯示
+        p_area_ping = p_area_sqm * 0.3025
+        
+        if any(keyword in p_type for keyword in ['坡道平面', '一樓平面', '升降平面']):
+            return f"平面 ({p_area_ping:.1f}坪)"
         elif any(keyword in p_type for keyword in ['升降機械', '坡道機械', '機械']):
-            return f"機械 ({p_area:.1f}坪)"
-        elif p_type and str(p_type) != 'nan':
-            return f"其他 ({p_area:.1f}坪)"
-        return f"有車位 ({p_area:.1f}坪)"
+            return f"機械 ({p_area_ping:.1f}坪)"
+        elif p_type and str(p_type) != 'nan' and str(p_type).strip() != '':
+            return f"其他 ({p_area_ping:.1f}坪)"
+        return f"有車位 ({p_area_ping:.1f}坪)"

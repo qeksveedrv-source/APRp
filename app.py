@@ -9,6 +9,12 @@ from datetime import datetime
 from geopy.geocoders import ArcGIS
 from modules.calculator import RealEstateValuator
 from modules.data_processor import get_neighbor_data, score_neighbors
+from modules.utils import (
+    categorize_parking_type,
+    infer_parking_price,
+    normalize_numeric_columns,
+    recalc_unit_price,
+)
 from modules import settings
 
 st.set_page_config(page_title="花蓮吉安房地訪價系統 (APRp)", layout="wide")
@@ -82,10 +88,13 @@ st.markdown("""
 # ==========================================
 # 定位結果快取一小時，避免重複扣 API 額度
 # ==========================================
+@st.cache_resource
+def get_geocoder():
+    return ArcGIS()
+
 @st.cache_data(ttl=settings.CACHE_TTL_SEC)
 def get_geocode(address):
-    from geopy.geocoders import ArcGIS
-    geocoder = ArcGIS()
+    geocoder = get_geocoder()
     return geocoder.geocode(address)
 # ==========================================
 # 資料庫連線快取
@@ -144,7 +153,7 @@ with st.container():
         with c1:
             build_area = st.number_input("建物權狀面積 (坪)", min_value=0.0, value=30.0, step=0.1)
         with c2:
-            age = st.number_input("屋齡 (年)", min_value=0, value=22)
+            age = st.number_input("屋齡 (年)", min_value=0, value=0)
         
         is_first_floor = st.checkbox("包含一樓成交紀錄", value=False)
 
@@ -176,78 +185,61 @@ if run_btn:
                 if 'address' in raw_pool.columns:
                     raw_pool = raw_pool[~raw_pool['address'].str.endswith('地下室', na=False)]
             
-            # 2. 權重計分 (傳入目標坪數與型態，供距離與面積計分使用)
-            scored_pool = score_neighbors(raw_pool, age, is_first_floor, build_area, b_type)
-            
             # 2. 權重計分
-            scored_pool = score_neighbors(raw_pool, age, is_first_floor, build_area, b_type)
+            scored_pool = score_neighbors(raw_pool, age, is_first_floor, b_type)
             
-            # --- 絕對分數門檻---
+            # --- 絕對分數門檻 ---
             final_pool = scored_pool[scored_pool['total_score'] >= settings.MIN_TOTAL_SCORE].copy()
             
-            # 依照分數由高到低排序，最多取前 10 筆作為估價基準
-            top_10 = final_pool.sort_values(['total_score', 'deal_date'], ascending=[False, False]).head(10)
-            
-            valuation_msg = f"嚴格權重篩選：共找到 {len(top_10)} 筆權重達標 (>=10分) 之相似紀錄"
+            # 防呆機制，若無任何案例達標，立即中止運算並報錯
+            if final_pool.empty:
+                st.session_state.valuation_results = "empty"
+                st.rerun()
 
-            # 數值型態與單位轉換
-            numeric_cols = ['land_area', 'total_build_area', 'price', 'main_area', 'parking_price', 'parking_area']
-            for col in numeric_cols:
-                if col in final_pool.columns:
-                    final_pool[col] = pd.to_numeric(final_pool[col], errors='coerce').fillna(0)
-            
-            # 面積換算改用 settings 常數
-            top_10['land_area'] = (top_10['land_area'] * settings.SQM_TO_PING).round(2)
-            top_10['total_build_area'] = (top_10['total_build_area'] * settings.SQM_TO_PING).round(2)
+            # =====================================================================
+            # 數值轉換與車位價格智能拆算
+            # =====================================================================
+            numeric_cols = ['land_area', 'total_build_area', 'price', 'parking_price', 'parking_area']
+            final_pool = normalize_numeric_columns(final_pool, numeric_cols)
 
+            if b_type != "透天厝":
+                from modules.utils import recalc_unit_price
+                final_pool = recalc_unit_price(final_pool)
+
+            final_pool['total_build_area'] = (final_pool['total_build_area'] * 0.3025).round(2)
+            
             if b_type == "透天厝":
-                target_data = {'land': land_area, 'build': build_area, 'age': age, 'material': material_val}
-                # 🌟 改為傳入完整的 final_pool，並由引擎回傳過濾好的正數 top_10
-                low, high, top_10 = RealEstateValuator.run_detached_valuation(target_data, final_pool, land_price)
-                eval_text = f"{int(low):,} 萬 - {int(high):,} 萬"
-                eval_mode = "透天厝成本法 (依相似度權重篩選)"
-            else:
-                low_up, high_up = RealEstateValuator.run_apartment_valuation(top_10)
-                eval_text = f"{low_up:.1f} 萬/坪 - {high_up:.1f} 萬/坪"
-                eval_mode = f"依面積推算總價：{int(low_up * build_area):,}萬 ~ {int(high_up * build_area):,}萬(不含車位）"
+                final_pool['land_area'] = (final_pool['land_area'] * 0.3025).round(2)
 
-            # 數值型態與單位轉換
-            numeric_cols = ['land_area', 'total_build_area', 'price', 'main_area', 'parking_price', 'parking_area']
-            for col in numeric_cols:
-                if col in final_pool.columns:
-                    final_pool[col] = pd.to_numeric(final_pool[col], errors='coerce').fillna(0)
-            
-            # 面積換算改用 settings 常數
-            final_pool['land_area'] = (final_pool['land_area'] * settings.SQM_TO_PING).round(2)
-            final_pool['total_build_area'] = (final_pool['total_build_area'] * settings.SQM_TO_PING).round(2)
-            
-            # 透天分組邏輯：同門牌若有多筆成交，只保留時間最近的一筆
+            # =====================================================================
+            # 選案與估價引擎運算 
+            # =====================================================================
             if b_type == "透天厝":
-                                
-                # 1. 先依照交易日期(deal_date)由新到舊排序
+                # 透天分組邏輯：同門牌若有多筆成交，只保留時間最近的一筆
                 final_pool = final_pool.sort_values('deal_date', ascending=False)
-                
-                # 2. 剔除重複的門牌，因為已經排過序，保留的第一筆 (keep='first') 就是最新的一筆
                 merged_pool = final_pool.drop_duplicates(subset=['address'], keep='first').copy()
-                
-                # 3. 設定排序用的日期欄位
                 merged_pool['sort_date'] = merged_pool['deal_date'].astype(str)
                 
-                # 選案策略
+                # 選案策略：5最新 + 5最近
                 latest_5 = merged_pool.sort_values('sort_date', ascending=False).head(5)
                 remaining = merged_pool[~merged_pool.index.isin(latest_5.index)]
                 closest_5 = remaining.sort_values('dist', ascending=True).head(5)
                 top_10 = pd.concat([latest_5, closest_5])
                 
+                valuation_msg = f"嚴格權重與距離篩選：共找到 {len(top_10)} 筆透天參考紀錄"
+                
                 target_data = {'land': land_area, 'build': build_area, 'age': age, 'material': material_val}
-                # 🌟 直接用 top_10 接收引擎過濾好、且已經內建好溢價係數的最終資料表！
-                low, high, top_10 = RealEstateValuator.run_detached_valuation(target_data, final_pool, land_price)
+                # 傳入篩選好的 top_10 給引擎運算
+                low, high, top_10 = RealEstateValuator.run_detached_valuation(target_data, top_10, land_price)
+                
                 eval_text = f"{int(low):,} 萬 - {int(high):,} 萬"
                 eval_mode = "透天厝成本法 (5最新+5最近加權)"
 
             else:
-                # 集合住宅選案
-                top_10 = final_pool.head(10).copy()
+                # 集合住宅選案：依照分數由高到低排序，最多取前 10 筆
+                top_10 = final_pool.sort_values(['total_score', 'deal_date'], ascending=[False, False]).head(10).copy()
+                valuation_msg = f"嚴格權重篩選：共找到 {len(top_10)} 筆權重達標 (>=10分) 之相似紀錄"
+
                 low_up, high_up = RealEstateValuator.run_apartment_valuation(top_10)
                 eval_text = f"{low_up:.1f} 萬/坪 - {high_up:.1f} 萬/坪"
                 eval_mode = f"依面積推算總價：{int(low_up * build_area):,}萬 ~ {int(high_up * build_area):,}萬(不含車位）"
@@ -465,70 +457,32 @@ elif res is not None:
     st.markdown("<div style='margin-top: 0.8cm;'></div>", unsafe_allow_html=True)
     st.write("### 📋 目標物件基本資料與行情估算")
     
-    # 🟢 保持強健的動態變數偵測機制
     top_10_df = res['top_10'].copy()
-    display_age = "未知"
-    display_build = "-"
-    display_land = "-"
+    # === 1. 統一安全解析 target_data (放在讀取變數的最前面) ===
+    t_data = res.get('target_data')
+    if isinstance(t_data, str):
+        import json
+        try:
+            t_data = json.loads(t_data)
+        except:
+            t_data = {}
+    elif not isinstance(t_data, dict):
+        t_data = {}
     
-    # 1. 屋齡變數偵測
-    if 'target' in locals() or 'target' in globals():
-        t_obj = locals().get('target') if 'target' in locals() else globals().get('target')
-        if isinstance(t_obj, dict) and 'age' in t_obj:
-            display_age = t_obj['age']
-            
-    if display_age == "未知":
-        for var_name in ['target_age', 'house_age', 'age', 'calc_age', 't_age', 'apt_age', 'building_age', 'b_age']:
-            if var_name in locals() or var_name in globals():
-                display_age = locals().get(var_name) if var_name in locals() else globals().get(var_name)
-                break
+    # === 2. 接下來取值，通通把原本的 res.get('target_data', {}) 替換成 t_data ===
+    display_age = t_data.get('age', res.get('build_age', res.get('age', '未知')))
+    display_build = res.get('build_area', t_data.get('build', '-'))
+    display_land = res.get('land_area', t_data.get('land', '-'))
 
-    # 2. 建物面積變數偵測
-    if 'target' in locals() or 'target' in globals():
-        t_obj = locals().get('target') if 'target' in locals() else globals().get('target')
-        if isinstance(t_obj, dict) and 'build' in t_obj:
-            display_build = t_obj['build']
-            
-    if display_build == "-":
-        for var_name in ['target_build_area', 'build_area', 'total_build_area', 'build', 't_build', 'ping', 'area', 'apt_area', 'house_area']:
-            if var_name in locals() or var_name in globals():
-                display_build = locals().get(var_name) if var_name in locals() else globals().get(var_name)
-                break
+    val_low = res.get('low_bound')
+    val_high = res.get('high_bound')
 
-    # 3. 土地面積變數偵測
-    if 'target' in locals() or 'target' in globals():
-        t_obj = locals().get('target') if 'target' in locals() else globals().get('target')
-        if isinstance(t_obj, dict) and 'land' in t_obj:
-            display_land = t_obj['land']
-            
-    if display_land == "-":
-        for var_name in ['land_area', 'target_land_area', 'land', 't_land']:
-            if var_name in locals() or var_name in globals():
-                display_land = locals().get(var_name) if var_name in locals() else globals().get(var_name)
-                break
-
-    # 4. 訪價上下限區間變數偵測
-    val_low, val_high = None, None
-    for var_name in ['low_bound', 'low_price', 'min_price', 'pred_low', 'low', 'min_val', 'unit_low', 'unit_high']:
-        if var_name in locals() or var_name in globals():
-            val_low = locals().get(var_name) if var_name in locals() else globals().get(var_name)
-            break
-    for var_name in ['high_bound', 'high_price', 'max_price', 'pred_high', 'high', 'max_val']:
-        if var_name in locals() or var_name in globals():
-            val_high = locals().get(var_name) if var_name in locals() else globals().get(var_name)
-            break
-            
-    if val_low is None and isinstance(res, dict): val_low = res.get('low_bound')
-    if val_high is None and isinstance(res, dict): val_high = res.get('high_bound')
-
-    # 保險機制
     if val_low is None and res.get('b_type') != "透天厝":
         if 'unit_price_p' in top_10_df.columns and 'total_score' in top_10_df.columns:
             valid_mask = top_10_df['unit_price_p'].notna() & top_10_df['total_score'].notna()
             sub_df = top_10_df[valid_mask]
             if not sub_df.empty and sub_df['total_score'].sum() > 0:
                 avg_unit_price = (sub_df['unit_price_p'] * sub_df['total_score']).sum() / sub_df['total_score'].sum()
-                # 改用 settings 中的區間參數
                 val_low = avg_unit_price * settings.PRICE_LOWER_BOUND
                 val_high = avg_unit_price * settings.PRICE_UPPER_BOUND
 
@@ -546,7 +500,7 @@ elif res is not None:
                 apt_total_low = val_low * build_float
                 apt_total_high = val_high * build_float
                 price_text = f"💰 合理行情（不含車位）：{int(apt_total_low)}萬 ～ {int(apt_total_high)}萬"
-                caption_text = f"💡 主建物單價區間：{val_low:.1f}萬 ～ {val_high:.1f}萬 / 坪"
+                caption_text = f"💡 建坪單價區間：{val_low:.1f}萬 ～ {val_high:.1f}萬 / 坪"
             except:
                 price_text = f"💰 合理行情（不含車位）：{val_low:.1f}萬 ～ {val_high:.1f}萬 / 坪"
 
@@ -617,29 +571,33 @@ elif res is not None:
         top_10_df['成交價(萬)'] = top_10_df['price'].apply(lambda x: f"{x/10000:,.0f}" if pd.notna(x) else "-")
         top_10_df['權重'] = top_10_df['total_score'] 
         
-        top_10_df['market_premium'] = top_10_df['market_premium'].apply(lambda x: f"{x * 100:.0f}%" if pd.notna(x) else "-")
-        
+        # 追加防呆：確保引擎有正確傳回 market_premium 才運算
+        if 'market_premium' in top_10_df.columns:
+            top_10_df['溢價係數'] = top_10_df['market_premium'].apply(lambda x: f"{x * 100:.0f}%" if pd.notna(x) else "-")
+        else:
+            top_10_df['溢價係數'] = "-"
+            
         top_10_df = top_10_df.rename(columns={
             'address': '門牌', 'total_build_area': '建物面積(坪)',
             'calc_age': '屋齡(年)', 'land_area': '土地面積(坪)',
-            'market_premium': '溢價係數', 'deal_date': '成交日'
+            'deal_date': '成交日'
         })
           
         desired_columns = [
             '標記', '門牌', '距離(m)', '建物面積(坪)', '屋齡(年)', 
-            '土地面積(坪)', '成交價(萬)', '溢價係數',  '成交日',
-        ]
+            '土地面積(坪)', '成交價(萬)', '溢價係數', '權重', '成交日',
+        ]  # 🚨 臭蟲修復 2：補上遺漏的「權重」欄位
+        
     else:  # 集合住宅
         top_10_df['實登價格(萬)'] = top_10_df['price'].apply(lambda x: f"{x/10000:,.0f}" if pd.notna(x) else "-")
-        top_10_df['權重'] = top_10_df['total_score']  # 🌟 新增權重欄位
+        top_10_df['權重'] = top_10_df['total_score']  
 
         if 'unit_price_p' in top_10_df.columns:
-            top_10_df['主建物單價'] = top_10_df['unit_price_p'].round(1)
-        else: top_10_df['主建物單價'] = "-"
+            top_10_df['建坪單價'] = top_10_df['unit_price_p'].round(1)
+        else: top_10_df['建坪單價'] = "-"
 
-        if 'berth_display' in top_10_df.columns: top_10_df = top_10_df.rename(columns={'berth_display': '車位'})
-        elif 'parking_type' in top_10_df.columns: top_10_df['車位'] = top_10_df['parking_type'].fillna("無車位")
-        else: top_10_df['車位'] = "-"
+        if '車位' not in top_10_df.columns:
+            top_10_df['車位'] = "無車位"
 
         top_10_df = top_10_df.rename(columns={
             'address': '門牌', 'total_build_area': '權狀面積(坪)',
@@ -648,8 +606,8 @@ elif res is not None:
 
         desired_columns = [
             '標記', '門牌', '距離(m)', '權狀面積(坪)', '屋齡(年)',
-            '主建物單價', '車位', '實登價格(萬)',  '成交日', 
-        ]
+            '建坪單價', '車位', '實登價格(萬)', '權重', '成交日', 
+        ]  
     # ==========================================
     # 欄位過濾，並剔除空案例
     # ==========================================
@@ -667,8 +625,8 @@ elif res is not None:
     if '權狀面積(坪)' in final_table_df.columns:
         final_table_df['權狀面積(坪)'] = final_table_df['權狀面積(坪)'].apply(lambda x: f"{float(x):.2f}" if pd.notna(x) and x != "-" else x)
     # 3. 集合住宅的單價處理 
-    if '主建物單價' in final_table_df.columns:
-        final_table_df['主建物單價'] = final_table_df['主建物單價'].apply(lambda x: f"{float(x):.1f}" if pd.notna(x) and x != "-" else x)
+    if '建坪單價' in final_table_df.columns:
+        final_table_df['建坪單價'] = final_table_df['建坪單價'].apply(lambda x: f"{float(x):.1f}" if pd.notna(x) and x != "-" else x)
         
     # =========================================================================
     # 呈現對齊地圖的完整資料表 (強制網頁與 PDF 列印框線完全顯現版)
@@ -731,14 +689,14 @@ elif res is not None:
         </style>
     """, unsafe_allow_html=True)
 
-    # ================= 🌟 動態刪除（行情重算）與 列印保留雙線 核心邏輯 =================
+    # ================= 動態刪除（行情重算）與 列印保留雙線 核心邏輯 =================
     # 1. 確保源頭的 res 包含完整的標記名稱，以供重算與對照
     res['top_10']['標記'] = map_labels
     
     # 2. 建立包含「刪除」勾選狀態，新增的欄位會自動安穩地排在「最右邊」
     final_table_df['刪除'] = final_table_df['標記'].isin(res.get('excluded_labels', []))
     
-    # 🌟 恢復最穩定的作法：將「標記」設為表格索引，Streamlit 會自動把它鎖在最左邊
+    # 將「標記」設為表格索引，Streamlit 會自動把它鎖在最左邊
     final_table_df = final_table_df.set_index('標記')
 
     # 3. 雙軌顯示 CSS：網頁互動表放大與置中；列印 PDF 切換純 HTML
@@ -802,25 +760,37 @@ elif res is not None:
         use_container_width=True
     )
 
-    # 🌟 恢復最直覺且絕對不會出錯的取值法：透過 Index 抓取
+    # 透過 Index 抓取
     if '刪除' in edited_df.columns:
         deleted_indices = edited_df[edited_df['刪除'] == True].index.tolist()
     else:
         deleted_indices = []
 
-    # 5. 【A4 列印版 - 繞過過濾法】：將被刪除的資料轉換為純 HTML，強制注入單紅線粗體刪除線
+    # 5. 【A4 列印版 - 繞過過濾法】：將被刪除的資料轉換為純 HTML，設定特定欄位樣式與粗體邏輯
     print_df = final_table_df.drop(columns=['刪除'], errors='ignore').astype(str).copy()
     
-    # 🌟 解決 HTML 表頭錯位的關鍵：將「標記」從索引還原為一般的第一個欄位
+    # 將「標記」從索引還原為一般的第一個欄位
     print_df = print_df.reset_index()
     
-    # 針對每一格資料，如果該列(標記名稱)已被刪除，則用 <span> 包裹並加入 inline CSS 
+    # 針對每一格資料進行判斷與樣式套用
     for row_idx in print_df.index:
         label = print_df.at[row_idx, '標記']
-        if label in deleted_indices:
-            for col in print_df.columns:
-                val = print_df.at[row_idx, col]
-                print_df.at[row_idx, col] = f"<span style='text-decoration: line-through; text-decoration-style: solid; text-decoration-color: #ff4b4b; text-decoration-thickness: 1px; color: #a0a0a0; font-weight: bold; font-style: italic;'>{val}</span>"
+        is_deleted = label in deleted_indices
+        
+        for col in print_df.columns:
+            val = print_df.at[row_idx, col]
+            
+            if is_deleted:
+                # 若該紀錄被勾選刪除
+                if col == '標記':
+                    # 只有「標記」欄位加上紅色單線刪除線，不用粗體
+                    print_df.at[row_idx, col] = f"<span style='text-decoration: line-through; text-decoration-style: solid; text-decoration-color: #ff4b4b; text-decoration-thickness: 3px; color: #a0a0a0; font-style: italic;'>{val}</span>"
+                else:
+                    # 其他資訊(門牌之後)「不加刪除線、不加粗」，僅用灰色斜體標示已失效
+                    print_df.at[row_idx, col] = f"<span style='color: #a0a0a0; font-style: italic;'>{val}</span>"
+            else:
+                # 若該紀錄「沒有」被刪除，則整列字體顯示為粗體
+                print_df.at[row_idx, col] = f"<span style='font-weight: bold; color: #000000;'>{val}</span>"
 
     # 將 DataFrame 轉為 HTML，加上 index=False 就不會產生多餘的空白列與雙層表頭！
     html_table = print_df.to_html(escape=False, classes="print-only-table", index=False)
@@ -976,6 +946,7 @@ elif res is not None:
                     <div class="algo-column" style="flex: 1.1;">
                         <b>第二階段：估價引擎運算</b><br>
                         • <b>車位拆算</b>：剔除車位價格與面積，還原純房屋的「實質單價 (萬/坪)」。<br>
+                        • <b>車位價格標示為 0</b>：「平面+所有權」扣155萬，「平面+使用權」扣115萬，「機械+所有權」扣80萬，「機械+使用權」扣50萬。<br>
                         • <b>加權平均單價</b>：將 10 筆案例的實質單價，依照第一階段算出的「總分」進行加權平均。<br>
                         &nbsp;&nbsp;<span style="color: #555; font-size: 14px;">(公式：Σ(各案例實質單價 × 各案例總分) / Σ(所有案例總分) )</span><br>
                         • <b>預測中心總價</b>：加權平均單價 × 目標物件建物面積 (不含車位)。<br>
