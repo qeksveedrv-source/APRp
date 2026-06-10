@@ -69,25 +69,20 @@ class RealEstateValuator:
             row.get('calc_age', 0), 
             row.get('material', '')
         ), axis=1)
-        
         # 批次計算總成本與每萬總價
         df['case_base_cost'] = (df['land_area'] * land_price) + df['b_cost']
         df['p_wan'] = df['price'] / 10000.0
-        
         # 批次計算溢價係數 (使用 np.where 防呆，避免分母為 0 導致程式崩潰)
         df['premium_rate'] = np.where(
             df['case_base_cost'] > 0, 
             (df['p_wan'] - df['case_base_cost']) / df['case_base_cost'], 
             0.0
         )
-
         # 2. 剔除負數，只保留溢價係數 >= 0 的有效案件
         valid_df = df[df['premium_rate'] >= 0].copy()
         valid_df['market_premium'] = valid_df['premium_rate'].round(2)
-        
         # 3. 採次高及次低的平均認定
         premiums = valid_df['premium_rate'].tolist()
-        
         if len(premiums) >= 4:
             sorted_premiums = sorted(premiums)
             final_premium_rate = (sorted_premiums[-2] + sorted_premiums[1]) / 2.0
@@ -96,10 +91,8 @@ class RealEstateValuator:
             final_premium_rate = np.mean(premiums)
         else:
             final_premium_rate = 0.0
-            
         # 4. 標的市值(萬元) = 總成本(萬元) × (1 + 最終認定的溢價係數)
         target_final_price = target_base_cost * (1 + final_premium_rate)
-        
         # 回傳最終合理區間，並將「剔除負數後的 valid_df」傳回給 app.py 畫表
         return target_final_price * settings.PRICE_LOWER_BOUND, target_final_price * settings.PRICE_UPPER_BOUND, valid_df
     
@@ -124,24 +117,24 @@ class RealEstateValuator:
         return avg_unit_price * settings.PRICE_LOWER_BOUND, avg_unit_price * settings.PRICE_UPPER_BOUND
 
     # ==========================================
-    # 4. 車位資訊解析工具 (修正坪數顯示錯誤)
+    # 4. 車位資訊解析工具 (暫時用不到)
     # ==========================================
-    @staticmethod
-    def get_berth_info(row):
-        target_str = str(row.get('target_type', ''))
-        p_type = str(row.get('parking_type', ''))
-        p_area_sqm = row.get('parking_area', 0) # 這是原始的平方公尺
+    #@staticmethod
+    #def get_berth_info(row):
+        #target_str = str(row.get('target_type', ''))
+        #p_type = str(row.get('parking_type', ''))
+        #p_area_sqm = row.get('parking_area', 0) # 這是原始的平方公尺
         
-        if '車位' not in target_str or pd.isna(p_area_sqm) or p_area_sqm == 0:
-            return "無車位"
+        #if '車位' not in target_str or pd.isna(p_area_sqm) or p_area_sqm == 0:
+            #return "無車位"
             
         # 將原始的「平方公尺」乘以設定檔常數，轉換為真實的「坪數」再做顯示
-        p_area_ping = p_area_sqm * 0.3025
+        #p_area_ping = p_area_sqm * 0.3025
         
-        if any(keyword in p_type for keyword in ['坡道平面', '一樓平面', '升降平面']):
-            return f"平面 ({p_area_ping:.1f}坪)"
-        elif any(keyword in p_type for keyword in ['升降機械', '坡道機械', '機械']):
-            return f"機械 ({p_area_ping:.1f}坪)"
-        elif p_type and str(p_type) != 'nan' and str(p_type).strip() != '':
-            return f"其他 ({p_area_ping:.1f}坪)"
-        return f"有車位 ({p_area_ping:.1f}坪)"
+        #if any(keyword in p_type for keyword in ['坡道平面', '一樓平面', '升降平面']):
+            #return f"平面 ({p_area_ping:.1f}坪)"
+        #elif any(keyword in p_type for keyword in ['升降機械', '坡道機械', '機械']):
+            #return f"機械 ({p_area_ping:.1f}坪)"
+        #elif p_type and str(p_type) != 'nan' and str(p_type).strip() != '':
+            #return f"其他 ({p_area_ping:.1f}坪)"
+        #return f"有車位 ({p_area_ping:.1f}坪)"

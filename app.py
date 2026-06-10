@@ -14,6 +14,7 @@ from modules.utils import (
     infer_parking_price,
     normalize_numeric_columns,
     recalc_unit_price,
+    fix_building_age,
 )
 from modules import settings
 
@@ -151,7 +152,7 @@ with st.container():
     else:
         c1, c2, c3 = st.columns(3)
         with c1:
-            build_area = st.number_input("建物權狀面積 (坪)", min_value=0.0, value=30.0, step=0.1)
+            build_area = st.number_input("權狀不含車位面積 (坪)", min_value=0.0, value=30.0, step=0.1)
         with c2:
             age = st.number_input("屋齡 (年)", min_value=0, value=0)
         
@@ -176,6 +177,7 @@ if run_btn:
             
         # 1. 抓取候選池
         raw_pool = get_neighbor_data(conn, loc.latitude, loc.longitude, b_type, addr)
+        raw_pool = fix_building_age(raw_pool)
         
         if not raw_pool.empty:
             # 集合住宅避開地下室紀錄
@@ -231,6 +233,9 @@ if run_btn:
                 # 集合住宅選案：依照分數由高到低排序，最多取前 10 筆
                 top_10 = final_pool.sort_values(['total_score', 'deal_date'], ascending=[False, False]).head(10).copy()
                 valuation_msg = f"嚴格權重篩選：共找到 {len(top_10)} 筆權重達標 (>=10分) 之相似紀錄"
+                
+                # 集合住宅建立目標資料字典
+                target_data = {'build': build_area, 'age': age}
 
                 low_up, high_up = RealEstateValuator.run_apartment_valuation(top_10)
                 eval_text = f"{low_up:.1f} 萬/坪 - {high_up:.1f} 萬/坪"
@@ -246,7 +251,8 @@ if run_btn:
                 
                 'low_bound': low if b_type == "透天厝" else low_up,
                 'high_bound': high if b_type == "透天厝" else high_up,
-                'target_data': target_data if b_type == "透天厝" else None,
+                
+                'target_data': target_data, 
                 'excluded_labels': []
             }
         else:
@@ -263,7 +269,7 @@ if res == "empty":
     st.warning("⚠️ 查無符合條件的成交紀錄。")
 elif res is not None:
     # =========================================================================
-    # 👑 1. A4 列印 (上邊 2cm，其餘三邊 1cm)
+    # 1. A4 列印 (上邊 2cm，其餘三邊 1cm)
     # =========================================================================
     st.markdown("""
         <style>
@@ -344,7 +350,7 @@ elif res is not None:
                 print-color-adjust: exact !important;
             }
             
-            /* 2. 🌟 修復標記消失：絕對不能使用 transform，改用 zoom 進行安全放大，並強制顯示 */
+            /* 2.修復標記消失：絕對不能使用 transform，改用 zoom 進行安全放大，並強制顯示 */
             .leaflet-marker-icon {
                 display: block !important;
                 opacity: 1 !important;
@@ -379,7 +385,7 @@ elif res is not None:
     top_10_df = res['top_10'].copy()
     map_labels = []
 
-    # 🌟 建立座標收集清單，首項先放入「目標物件」座標
+    # 建立座標收集清單，首項先放入「目標物件」座標
     all_coordinates = [[res['lat'], res['lon']]]
 
     # 迴圈標記參考標的
@@ -434,7 +440,7 @@ elif res is not None:
             map_labels.append("")
             continue
 
-    # 🌟 關鍵改進：利用 fit_bounds 功能，全自動調整地圖的中心點與縮放大小，確保看得到所有標記
+    # 利用 fit_bounds 功能，全自動調整地圖的中心點與縮放大小，確保看得到所有標記
     if len(all_coordinates) > 1:
         m.fit_bounds(all_coordinates)
 
@@ -445,7 +451,7 @@ elif res is not None:
     # 【地圖下面】顯示目標物件的資料與訪價區間 
     # =========================================================================
     
-    # 🚀 調整 1：設定地圖與基本資料之間的精確間距
+    # 1：設定地圖與基本資料之間的間距
     st.markdown("<div style='margin-top: 0.8cm;'></div>", unsafe_allow_html=True)
     st.write("### 📋 目標物件基本資料與行情估算")
     
@@ -503,7 +509,7 @@ elif res is not None:
         st.caption(caption_text)
 
     # =========================================================================
-    # 🚀 調整 2：建物型態、屋齡、土地面積、建物面積，使用 HTML 強制放大到 18px
+    # 2：建物型態、屋齡、土地面積、建物面積，使用 HTML 強制放大到 18px
     # =========================================================================
     st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
     
@@ -538,15 +544,15 @@ elif res is not None:
             st.markdown(f"<div style='font-size: 20px; color: inherit; padding-top: 8px;'>🧱 <b>建材</b>：{display_material}</div>", unsafe_allow_html=True)
 
 
-    # 🚀 調整 3：設定基本資料與下方近鄰成交參考紀錄表之間的精確間距
+    # 設定基本資料與下方鄰近成交參考紀錄表之間的間距
     st.markdown("<div style='margin-top: 0.5cm;'></div>", unsafe_allow_html=True)
             
     # =========================================================================
-    # 【最下面】顯示近鄰成交參考紀錄表
+    # 【最下面】顯示鄰近成交參考紀錄表
     # =========================================================================
     top_10_df['標記'] = map_labels
 
-    # 🌟 核心修正：將歷史實價登錄案例中的「花蓮縣」全面清洗移除
+    # 將歷史實價登錄案例中的「花蓮縣」全面清洗移除
     if 'address' in top_10_df.columns:
         top_10_df['address'] = top_10_df['address'].astype(str).apply(lambda x: x.replace("花蓮縣", ""))
 
@@ -578,7 +584,7 @@ elif res is not None:
         desired_columns = [
             '標記', '門牌', '距離(m)', '建物面積(坪)', '屋齡(年)', 
             '土地面積(坪)', '成交價(萬)', '溢價係數', '權重', '成交日',
-        ]  # 🚨 臭蟲修復 2：補上遺漏的「權重」欄位
+        ]  
         
     else:  # 集合住宅
         top_10_df['實登價格(萬)'] = top_10_df['price'].apply(lambda x: f"{x/10000:,.0f}" if pd.notna(x) else "-")
@@ -621,12 +627,28 @@ elif res is not None:
         final_table_df['建坪單價'] = final_table_df['建坪單價'].apply(lambda x: f"{float(x):.1f}" if pd.notna(x) and x != "-" else x)
         
     # =========================================================================
+    # 4. 數值轉換為人類閱讀文字 (解決新成屋與不詳顯示)
+    # =========================================================================
+    if '屋齡(年)' in final_table_df.columns:
+        def _format_ui_age(x):
+            if pd.isna(x) or str(x).strip().lower() in ["nan", "none", "-", "nat"]:
+                return "不詳"
+            try:
+                val = float(x)
+                if val == 0:
+                    return "新成屋(0年)"
+                return f"{int(val)}"
+            except:
+                return "不詳"
+        final_table_df['屋齡(年)'] = final_table_df['屋齡(年)'].apply(_format_ui_age)  
+        
+    # =========================================================================
     # 呈現對齊地圖的完整資料表 (強制網頁與 PDF 列印框線完全顯現版)
     # =========================================================================
     st.markdown("<br class='no-print'>", unsafe_allow_html=True)
-    st.write("### 📊 近鄰成交參考紀錄表 ")
+    st.write("### 📊 鄰近成交參考紀錄表 ")
     
-    # 💉 注入進階 CSS：除了放大字體，更強行命令瀏覽器在列印時「必須繪製邊框」
+    # 注入進階 CSS：除了放大字體，更強行命令瀏覽器在列印時「必須繪製邊框」
     st.markdown("""
         <style>
         /* --- 網頁畫面與列印通用的表格外觀優化 --- */
@@ -658,7 +680,7 @@ elif res is not None:
             color: #000000 !important;
         }
 
-        /* --- 👑 核心：針對 A4 PDF 列印的強制框線防線 --- */
+        /* --- 針對 A4 PDF 列印的強制框線防線 --- */
         @media print {
             [data-testid="stTable"] table, 
             [data-testid="stTable"] th, 
@@ -918,7 +940,7 @@ elif res is not None:
                         • <b>計分規則</b>：<br>
                         &nbsp;&nbsp;1. <b>交易年份</b>：1年內加6分、2年內加2分、3年內加1分、逾3年扣3分。<br>
                         &nbsp;&nbsp;2. <b>距離遠近</b>：50m內加4分、250m內加3分、500m內加2分、逾500m加1分。<br>
-                        &nbsp;&nbsp;3. <b>屋齡差距</b>：同屋齡加5分、屋齡差 10 年內加3分、屋齡差 11年以上加1分。<br>
+                        &nbsp;&nbsp;3. <b>屋齡差距</b>：同屋齡加5分、屋齡差 10 年內加3分、屋齡差 11年以上扣3分。<br>
                         • <b>實登備註</b>：'親友', '急買', '急賣', '員工', '關係人', '借名', '畸零地', '保留地'。<br>
                         • <b>上述特殊交易</b>：資料庫轉檔過程，已篩選剃除。<br>
                     </div>
