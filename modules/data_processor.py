@@ -1,13 +1,50 @@
 import pandas as pd
 import math
+import numpy as np
 from datetime import datetime
+from modules import settings
+from modules.utils import vectorized_haversine
 
-# 引入自訂模組
-from modules.utils import haversine
-from modules import settings  # 引入設定檔
+# ==========================================
+# 1. 工具函式：建材標準化 (新增)
+# ==========================================
+def normalize_material(mat_str):
+    if pd.isna(mat_str): return "排除"
+    s = str(mat_str).strip().upper()
+    
+    if any(k in s for k in ["加強磚造", "磚造", "ＲＣ磚", "RC磚"]):
+        return "鋼筋混凝土加強磚造"
+    elif any(k in s for k in ["鋼筋混凝土", "ＲＣ", "RC"]):
+        return "鋼筋混凝土"      
+    # 其他全部標記為排除
+    return "排除"
 
+# ==========================================
+# 2. 工具函式：屋齡計算
+# ==========================================
+def _safe_calc_age(x, current_year, default_age):
+    """強健的屋齡計算：防止實登髒資料導致系統崩潰"""
+    if pd.isna(x):
+        return default_age
+    s = str(x).strip().replace('.0', '')
+    if not s or s == '0' or s.lower() in ['nan', 'none', '-', 'nat']:
+        return default_age
+    try:
+        if len(s) >= 5:
+            build_year = int(s[:-4])
+        else:
+            build_year = int(s)
+        if build_year > current_year or build_year < 1:
+            return default_age
+        return current_year - build_year
+    except ValueError:
+        return default_age
+
+# ==========================================
+# 3. 主邏輯：抓取資料並清洗
+# ==========================================
 def get_neighbor_data(conn, t_lat, t_lon, b_type, t_addr=""):
-    """從資料庫抓取初步候選池，加入 Bounding Box 邊界框與街路排他邏輯"""
+    """從資料庫抓取初步候選池，加入 Bounding Box 邊界框"""
     core_keyword = b_type.split('(')[0].strip()
     
     # 計算 Bounding Box
@@ -30,27 +67,25 @@ def get_neighbor_data(conn, t_lat, t_lon, b_type, t_addr=""):
     if df.empty:
         return df
 
-    if '街' in t_addr:
-        df = df[~df['address'].str.contains('路', na=False)]
-
-    # ==========================================
-    # 同門牌多筆紀錄，直接在這裡只保留「時間最新」的一筆
-    # ==========================================
+    # 去重：只保留時間最新的一筆
     if not df.empty:
         df['deal_date'] = df['deal_date'].astype(str)
         df = df.sort_values('deal_date', ascending=False)
         df = df.drop_duplicates(subset=['address'], keep='first').copy()
-    # ==========================================
 
-    # 後續的距離計算
-    df['dist'] = df.apply(
-        lambda r: haversine(t_lat, t_lon, float(r['Response_Y']), float(r['Response_X'])), 
-        axis=1
-    )
+    # 距離計算 (向量化極速版)
+    df['dist'] = vectorized_haversine(t_lat, t_lon, df['Response_Y'].astype(float), df['Response_X'].astype(float))
 
-    # 套用 settings 中的距離與筆數限制
-    target_df = df[df['dist'] <= settings.SEARCH_RADIUS_KM].sort_values('dist').head(settings.MAX_CANDIDATES)
+    # 套用距離與筆數限制
+    target_df = df[df['dist'] <= settings.SEARCH_RADIUS_KM].sort_values('dist').head(settings.MAX_CANDIDATES).copy()
     
+    # ==========================================
+    # 建材正規化 (確保後續估價引擎運算無誤)
+    # ==========================================
+    if 'material' in target_df.columns:
+        target_df['material'] = target_df['material'].apply(normalize_material)
+        target_df = target_df[target_df['material'] != "排除"].copy()
+        
     return target_df
 
 def score_neighbors(df, target_age, is_first_floor_checked, b_type=""):
@@ -126,7 +161,9 @@ def score_neighbors(df, target_age, is_first_floor_checked, b_type=""):
         return score
 
     df['total_score'] = df.apply(calc_score, axis=1)
+    
+    # 呼叫安全解析函式
     df['calc_age'] = df['build_date'].apply(
-        lambda x: current_roc_year - int(str(x)[:-4]) if pd.notna(x) and str(x).strip() != '' else target_age
+        lambda x: _safe_calc_age(x, current_roc_year, target_age)
     )
     return df.sort_values('total_score', ascending=False)

@@ -1,3 +1,4 @@
+import re
 import streamlit as st
 import pandas as pd
 import sqlite3
@@ -18,7 +19,7 @@ from modules.utils import (
 )
 from modules import settings
 
-st.set_page_config(page_title="花蓮吉安房地訪價系統 (APRp)", layout="wide")
+st.set_page_config(page_title="宜花東房地訪價系統 (APRp)", layout="wide")
 
 # --- 加入列印優化 CSS ---
 st.markdown("""
@@ -112,10 +113,13 @@ def get_db_connection():
 if 'valuation_results' not in st.session_state:
     st.session_state.valuation_results = None
 
+#當使用者修改任何輸入條件時，清除下方的舊估價結果
+def clear_results():
+    st.session_state.valuation_results = None
 # ==========================================
 # 頂部區塊：網頁標題與參數輸入
 # ==========================================
-st.markdown("<h1 class='no-print'>🏠 花蓮吉安房地訪價系統（APRp）</h1>", unsafe_allow_html=True)
+st.markdown("<h1 class='no-print'>🏠 宜花東房地訪價系統（APRp）</h1>", unsafe_allow_html=True)
 st.markdown("<h5 class='no-print'>資料庫112年到115年第一季</h5>", unsafe_allow_html=True)
 st.markdown("<p class='no-print'><b>訪價模式</b><br>透天厝 = 成本法折舊＋市場溢價調整、集合住宅 = 實質單價拆算 ＋ 相似度權重加權</p>", unsafe_allow_html=True)
 st.markdown("<hr class='no-print'>", unsafe_allow_html=True)
@@ -125,36 +129,43 @@ with st.container():
    
     col_a, col_b = st.columns([2, 1])
     with col_a:
-        addr = st.text_input("輸入目標地址", "花蓮縣吉安鄉")
+        loc_col1, loc_col2 = st.columns([1, 3])
+        with loc_col1:
+            city = st.selectbox("縣市", ["宜蘭縣", "花蓮縣", "台東縣"], index=1)
+        with loc_col2:
+            street_addr = st.text_input("輸入目標詳細地址 (鄉鎮市區+道路門牌)", on_change=clear_results)
+        
+    # 後台運算時自動拼接
+    addr = city + street_addr
     with col_b:
         b_type = st.selectbox("建物型態", [
             "透天厝", 
             "住宅大樓(11樓有電梯)", 
             "華廈(10樓有電梯)", 
             "公寓(5樓無電梯)"
-        ])
+        ], on_change=clear_results)
     
     if b_type == "透天厝":
         c1, c2, c3 = st.columns(3)
         with c1:
-            land_area = st.number_input("土地面積 (坪)", min_value=0.0, value=30.0, step=0.1)
+            land_area = st.number_input("土地面積 (坪)", min_value=0.0, value=30.0, step=0.1, on_change=clear_results)
         with c2:
-            land_price = st.number_input("土地行情 (萬/坪)", min_value=0.0, value=14.0, step=0.1)
+            land_price = st.number_input("土地行情 (萬/坪)", min_value=0.0, value=14.0, step=0.1, on_change=clear_results)
         with c3:
-            build_area = st.number_input("建物總面積 (坪)", min_value=0.0, value=60.0, step=0.1)
+            build_area = st.number_input("建物總面積 (坪)", min_value=0.0, value=60.0, step=0.1, on_change=clear_results)
         
         c4, material_col = st.columns([1, 1])
         with material_col:
             material_val = st.selectbox("主要建材", ["鋼筋混凝土", "鋼筋混凝土加強磚造"])
         with c4:
-            age = st.number_input("屋齡 (年)", min_value=0, value=20)
+            age = st.number_input("屋齡 (年)", min_value=0, value=20, on_change=clear_results)
         is_first_floor = True 
     else:
         c1, c2, c3 = st.columns(3)
         with c1:
-            build_area = st.number_input("權狀不含車位面積 (坪)", min_value=0.0, value=30.0, step=0.1)
+            build_area = st.number_input("權狀不含車位面積 (坪)", min_value=0.0, value=30.0, step=0.1, on_change=clear_results)
         with c2:
-            age = st.number_input("屋齡 (年)", min_value=0, value=0)
+            age = st.number_input("屋齡 (年)", min_value=0, value=0, on_change=clear_results)
         
         is_first_floor = st.checkbox("包含一樓成交紀錄", value=False)
 
@@ -164,15 +175,16 @@ with st.container():
 # 運算邏輯區
 # ==========================================
 if run_btn:
-    with st.spinner("正在定位地址與搜尋鄰近案例..."):
-        # 如果使用者沒有輸入花蓮縣，系統自動補上以利精準定位
-        search_addr = addr if addr.startswith("花蓮縣") else "花蓮縣" + addr
-        loc = get_geocode(search_addr)
+    if not addr.strip() or len(addr) < 5:
+        st.warning("⚠️ 請輸入完整的詳細地址再進行試算。")
+    else:
+        with st.spinner("正在定位地址與搜尋鄰近案例..."):
+            loc = get_geocode(addr)
     
     if loc:
         conn = get_db_connection()
         if conn is None:
-            st.error("找不到資料庫 (data/hualien.db)")
+            st.error("找不到資料庫 (data/YHT.db)")
             st.stop()
             
         # 1. 抓取候選池
@@ -503,7 +515,7 @@ elif res is not None:
                 price_text = f"💰 合理行情（不含車位）：{val_low:.1f}萬 ～ {val_high:.1f}萬 / 坪"
 
     # 第一行排版：地址與區間
-    target_address = res.get('addr', '未知地址').replace("花蓮縣", "")
+    target_address = re.sub(r"^(宜蘭縣|花蓮縣|台東縣)", "", res.get('addr', '未知地址'))
     st.markdown(f"#### 📍 標的地址：{target_address} &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; {price_text}")
     if caption_text:
         st.caption(caption_text)
@@ -552,9 +564,9 @@ elif res is not None:
     # =========================================================================
     top_10_df['標記'] = map_labels
 
-    # 將歷史實價登錄案例中的「花蓮縣」全面清洗移除
+    # 將歷史實價登錄案例全面清洗移除
     if 'address' in top_10_df.columns:
-        top_10_df['address'] = top_10_df['address'].astype(str).apply(lambda x: x.replace("花蓮縣", ""))
+        top_10_df['address'] = top_10_df['address'].astype(str).apply(lambda x: re.sub(r"^(宜蘭縣|花蓮縣|台東縣)", "", x))
 
     # 統一處理距離轉換 (將 dist 公里轉換為公尺)
     if 'dist' in top_10_df.columns:
@@ -947,7 +959,7 @@ elif res is not None:
                     <div class="algo-column" style="flex: 1.1;">
                         <b>第二階段：估價引擎運算</b><br>
                         • <b>車位拆算</b>：剔除車位價格與面積，還原純房屋的「實質單價 (萬/坪)」。<br>
-                        • <b>車位價格標示為 0</b>：「平面+所有權」扣155萬，「平面+使用權」扣115萬，「機械+所有權」扣80萬，「機械+使用權」扣50萬。<br>
+                        • <b>車位價格標示為 0</b>：若實登車位價為 0，系統將自動扣除估算：「平面所有權」扣155萬、「平面使用權」扣115萬、「機械所有權」扣80萬、「機械使用權」扣50萬。
                         • <b>加權平均單價</b>：將 10 筆案例的實質單價，依照第一階段算出的「總分」進行加權平均。<br>
                         &nbsp;&nbsp;<span style="color: #555; font-size: 14px;">(公式：Σ(各案例實質單價 × 各案例總分) / Σ(所有案例總分) )</span><br>
                         • <b>預測中心總價</b>：加權平均單價 × 目標物件建物面積 (不含車位)。<br>
