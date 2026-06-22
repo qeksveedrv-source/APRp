@@ -152,18 +152,32 @@ def calculate_age_from_roc(roc_date_str):
     if y is not None:
         return max((datetime.now().year - 1911) - y, 0)
     return None
-
+# =========================================================================
+# 透天選案策略調整為 7最新 + 3最近
+# =========================================================================
 def filter_detached_top10(df):
-    if df.empty: return df
+    """
+    選案策略：同門牌去重複後，優先篩選 7 筆交易日最新 + 3 筆地理距離最近的紀錄
+    """
+    if df.empty: 
+        return df
+        
+    # 1. 依成交日降序排列，同地址去重複僅保留最新一筆紀錄
     df_sorted = df.sort_values('deal_date', ascending=False)
     merged_pool = df_sorted.drop_duplicates(subset=['address'], keep='first').copy()
     merged_pool['sort_date'] = merged_pool['deal_date'].astype(str)
 
-    latest_5 = merged_pool.sort_values('sort_date', ascending=False).head(5)
-    remaining = merged_pool[~merged_pool.index.isin(latest_5.index)]
-    closest_5 = remaining.sort_values('dist', ascending=True).head(5)
+    # 2. 核心調整：取交易日最新（時間最近）的前 7 筆
+    latest_7 = merged_pool.sort_values('sort_date', ascending=False).head(7)
+    
+    # 3. 排除已被最新選中的 ID，避免同個標的重複被撈取
+    remaining = merged_pool[~merged_pool.index.isin(latest_7.index)]
+    
+    # 4. 核心調整：從剩下案例中取地理距離最近的前 3 筆
+    closest_3 = remaining.sort_values('dist', ascending=True).head(3)
 
-    return pd.concat([latest_5, closest_5])
+    # 5. 合併輸出 10 筆參考案例
+    return pd.concat([latest_7, closest_3])
     
 # =========================================================================
 # 屋齡清洗引擎（支援 36 個月新屋判定與 空白標記 NaN）
