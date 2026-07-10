@@ -48,9 +48,9 @@ class RealEstateValuator:
             
         return base * rate
 
-    # ==========================================
-    #  2. 透天厝估價引擎 (次高與次低溢價平均法 + 負數剔除機制)
-    # ==========================================
+    # =========================================================================
+    #  2. 🏠 透天厝估價引擎 (次低~次高溢價區間法 | 保留正負向)
+    # =========================================================================
     @classmethod
     def run_detached_valuation(cls, target, df, land_price):
         # 1. 計算目標物件基準成本
@@ -69,35 +69,55 @@ class RealEstateValuator:
             row.get('calc_age', 0), 
             row.get('material', '')
         ), axis=1)
+        
         # 批次計算總成本與每萬總價
         df['case_base_cost'] = (df['land_area'] * land_price) + df['b_cost']
         df['p_wan'] = df['price'] / 10000.0
+        
         # 批次計算溢價係數 (使用 np.where 防呆，避免分母為 0 導致程式崩潰)
+        # 🌟 亮點：保留所有溢價案例（不論正負向）
         df['premium_rate'] = np.where(
             df['case_base_cost'] > 0, 
             (df['p_wan'] - df['case_base_cost']) / df['case_base_cost'], 
             0.0
         )
-        # 2. 剔除負數，只保留溢價係數 >= 0 的有效案件
-        valid_df = df[df['premium_rate'] >= 0].copy()
+        
+        # 全數保留為有效案件，並四捨五入至小數第二位供畫表
+        valid_df = df.copy()
         valid_df['market_premium'] = valid_df['premium_rate'].round(2)
-        # 3. 採次高及次低的平均認定
-        premiums = valid_df['premium_rate'].tolist()
-        if len(premiums) >= 4:
-            sorted_premiums = sorted(premiums)
-            final_premium_rate = (sorted_premiums[-2] + sorted_premiums[1]) / 2.0
-        elif len(premiums) > 0:
-            # 防呆：如果附近有效的案件少於4件，則直接取算術平均
-            final_premium_rate = np.mean(premiums)
+        
+        # 2. 🌟 核心修改點：依「次低」與「次高」溢價係數決定市場區間
+        premiums = sorted(valid_df['premium_rate'].tolist())
+        total_cases = len(premiums)
+        
+        if total_cases >= 4:
+            # 正常狀況：去頭去尾，取次低與次高
+            low_premium = premiums[1]       # 次低
+            high_premium = premiums[-2]     # 次高
+        elif total_cases == 3:
+            # 只有 3 筆：取中間值作為單一基準，或展開範圍
+            low_premium = premiums[0]
+            high_premium = premiums[-1]
+        elif total_cases == 2:
+            low_premium = premiums[0]
+            high_premium = premiums[1]
+        elif total_cases == 1:
+            low_premium = premiums[0]
+            high_premium = premiums[0]
         else:
-            final_premium_rate = 0.0
-        # 4. 標的市值(萬元) = 總成本(萬元) × (1 + 最終認定的溢價係數)
-        target_final_price = target_base_cost * (1 + final_premium_rate)
-        # 回傳最終合理區間，並將「剔除負數後的 valid_df」傳回給 app.py 畫表
-        return target_final_price * settings.PRICE_LOWER_BOUND, target_final_price * settings.PRICE_UPPER_BOUND, valid_df
+            low_premium = 0.0
+            high_premium = 0.0
+            
+        # 3. 🌟 行情公式變更：
+        # 合理行情區間 = 標的總成本 × (1 + 次低溢價係數) ～ 標的總成本 × (1 + 次高溢價係數)
+        val_low_bound = target_base_cost * (1 + low_premium)
+        val_high_bound = target_base_cost * (1 + high_premium)
+        
+        # 回傳最終動態行情區間，並將 valid_df 傳回給前端畫表
+        return val_low_bound, val_high_bound, valid_df 
     
     # ==========================================
-    # 3. 集合住宅估價引擎 (實質單價法 + 加權平均)
+    # 3. 🏢 集合住宅估價引擎 (實質單價法 + 加權平均)
     # ==========================================
     @classmethod
     def run_apartment_valuation(cls, df):
@@ -115,26 +135,3 @@ class RealEstateValuator:
             avg_unit_price = 0
             
         return avg_unit_price * settings.PRICE_LOWER_BOUND, avg_unit_price * settings.PRICE_UPPER_BOUND
-
-    # ==========================================
-    # 4. 車位資訊解析工具 (暫時用不到)
-    # ==========================================
-    #@staticmethod
-    #def get_berth_info(row):
-        #target_str = str(row.get('target_type', ''))
-        #p_type = str(row.get('parking_type', ''))
-        #p_area_sqm = row.get('parking_area', 0) # 這是原始的平方公尺
-        
-        #if '車位' not in target_str or pd.isna(p_area_sqm) or p_area_sqm == 0:
-            #return "無車位"
-            
-        # 將原始的「平方公尺」乘以設定檔常數，轉換為真實的「坪數」再做顯示
-        #p_area_ping = p_area_sqm * 0.3025
-        
-        #if any(keyword in p_type for keyword in ['坡道平面', '一樓平面', '升降平面']):
-            #return f"平面 ({p_area_ping:.1f}坪)"
-        #elif any(keyword in p_type for keyword in ['升降機械', '坡道機械', '機械']):
-            #return f"機械 ({p_area_ping:.1f}坪)"
-        #elif p_type and str(p_type) != 'nan' and str(p_type).strip() != '':
-            #return f"其他 ({p_area_ping:.1f}坪)"
-        #return f"有車位 ({p_area_ping:.1f}坪)"

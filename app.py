@@ -19,7 +19,7 @@ from modules.utils import (
 )
 from modules import settings
 
-st.set_page_config(page_title="宜花東房地訪價系統 (APRp)", layout="wide")
+st.set_page_config(page_title="營業區域房地訪價系統 (APRp)", layout="wide")
 
 # --- 加入列印優化 CSS ---
 st.markdown("""
@@ -119,8 +119,8 @@ def clear_results():
 # ==========================================
 # 頂部區塊：網頁標題與參數輸入
 # ==========================================
-st.markdown("<h1 class='no-print'>🏠 宜花東房地訪價系統（APRp）</h1>", unsafe_allow_html=True)
-st.markdown("<h5 class='no-print'>資料庫112年到115年第一季</h5>", unsafe_allow_html=True)
+st.markdown("<h1 class='no-print'>🏠 營業區域房地訪價系統（APRp）</h1>", unsafe_allow_html=True)
+st.markdown("<h5 class='no-print'>資料庫112年到115年第二季</h5>", unsafe_allow_html=True)
 st.markdown("<p class='no-print'><b>訪價模式</b><br>透天厝 = 成本法折舊＋市場溢價調整、集合住宅 = 實質單價拆算 ＋ 相似度權重加權</p>", unsafe_allow_html=True)
 st.markdown("<hr class='no-print'>", unsafe_allow_html=True)
 
@@ -131,7 +131,7 @@ with st.container():
     with col_a:
         loc_col1, loc_col2 = st.columns([1, 3])
         with loc_col1:
-            city = st.selectbox("縣市", ["宜蘭縣", "花蓮縣", "台東縣"], index=1)
+            city = st.selectbox("縣市", ["宜蘭縣", "花蓮縣", "台東縣", "台中市", "高雄市"], index=1)
         with loc_col2:
             street_addr = st.text_input("輸入目標詳細地址 (鄉鎮市區+道路門牌)", on_change=clear_results)
         
@@ -184,7 +184,7 @@ if run_btn:
     if loc:
         conn = get_db_connection()
         if conn is None:
-            st.error("找不到資料庫 (data/YHT.db)")
+            st.error("找不到資料庫 (data/hl2c_LVR.db)")
             st.stop()
             
         # 1. 抓取候選池
@@ -201,9 +201,8 @@ if run_btn:
             
             # 2. 權重計分
             scored_pool = score_neighbors(raw_pool, age, is_first_floor, b_type)
-            
-            # --- 絕對分數門檻 ---
-            final_pool = scored_pool[scored_pool['total_score'] >= settings.MIN_TOTAL_SCORE].copy()
+
+            final_pool = scored_pool.copy()
             
             # 防呆機制，若無任何案例達標，立即中止運算並報錯
             if final_pool.empty:
@@ -239,12 +238,12 @@ if run_btn:
                 low, high, top_10 = RealEstateValuator.run_detached_valuation(target_data, top_10, land_price)
                 
                 eval_text = f"{int(low):,} 萬 - {int(high):,} 萬"
-                eval_mode = "透天厝成本法 (5最新+5最近加權)"
+                eval_mode = "透天厝成本法 (7最新+3最近加權)"
 
             else:
                 # 集合住宅選案：依照分數由高到低排序，最多取前 10 筆
                 top_10 = final_pool.sort_values(['total_score', 'deal_date'], ascending=[False, False]).head(10).copy()
-                valuation_msg = f"嚴格權重篩選：共找到 {len(top_10)} 筆權重達標 (>=10分) 之相似紀錄"
+                valuation_msg = f"相似度權重篩選：共選取前 {len(top_10)} 筆最相關之鄰近交易紀錄"
                 
                 # 集合住宅建立目標資料字典
                 target_data = {'build': build_area, 'age': age}
@@ -515,7 +514,7 @@ elif res is not None:
                 price_text = f"💰 合理行情（不含車位）：{val_low:.1f}萬 ～ {val_high:.1f}萬 / 坪"
 
     # 第一行排版：地址與區間
-    target_address = re.sub(r"^(宜蘭縣|花蓮縣|台東縣)", "", res.get('addr', '未知地址'))
+    target_address = re.sub(r"^(宜蘭縣|花蓮縣|台東縣|台中市|高雄市)", "", res.get('addr', '未知地址'))
     st.markdown(f"#### 📍 標的地址：{target_address} &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; {price_text}")
     if caption_text:
         st.caption(caption_text)
@@ -566,7 +565,7 @@ elif res is not None:
 
     # 將歷史實價登錄案例全面清洗移除
     if 'address' in top_10_df.columns:
-        top_10_df['address'] = top_10_df['address'].astype(str).apply(lambda x: re.sub(r"^(宜蘭縣|花蓮縣|台東縣)", "", x))
+        top_10_df['address'] = top_10_df['address'].astype(str).apply(lambda x: re.sub(r"^(宜蘭縣|花蓮縣|台東縣|台中[縣市]|高雄[縣市])", "", x))
 
     # 統一處理距離轉換 (將 dist 公里轉換為公尺)
     if 'dist' in top_10_df.columns:
@@ -888,12 +887,12 @@ elif res is not None:
                     </div>
                     <div class="algo-column" style="flex: 1.1;">
                         <b>第二階段：估價引擎運算</b><br>
-                        • <b>透天厝模式 (極端值排除法)</b>：<br>
-                        &nbsp;&nbsp;1. 計算案例溢價係數 <span style="font-size: 11px;">(成交價-總成本)/總成本</span>。<br>
-                        &nbsp;&nbsp;2. <b>剔除負數</b>：溢價係數為負者不具參考價值，直接排除。<br>
-                        &nbsp;&nbsp;3. <b>次高次低平均</b>：排除最高與最低值，取次高與次低係數平均。<br>
-                        &nbsp;&nbsp;4. 預測中心價 = 標的總成本 × (1 + 平均認定溢價係數)。<br>
-                        • <b>合理區間</b>：中心價 ±6% 認定合理行情區間。另需人工判斷刪除偏離紀錄。
+                        • <b>透天厝模式 (動態邊界區間法)</b>：<br>
+                        &nbsp;&nbsp;1. 計算案例溢價係數：包含所有溢價案例（<b>不論正負向全數保留</b>）。<br>
+                        &nbsp;&nbsp;2. <b>市場溢價區間</b>：自動排序並鎖定「次低溢價係數」～「次高溢價係數」。<br>
+                        &nbsp;&nbsp;3. <b>合理行情估算</b>：區間直接定義為：<br>
+                        &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;💰 <span style="color: #28a745; font-weight: bold;">標的總成本 × (1 + 次低溢價係數)</span> &nbsp;～&nbsp; <span style="color: #dc3545; font-weight: bold;">標的總成本 × (1 + 次高溢價係數)</span>。<br>
+                        • <b>合理區間調整</b>：完全由周邊實證案例框定邊界，需人工判斷勾選刪除偏離紀錄即時重算。
                     </div>
                 </div>
             </div>
