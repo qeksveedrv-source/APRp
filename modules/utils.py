@@ -66,7 +66,7 @@ def infer_parking_price(row):
     if pd.notna(p_price) and float(p_price) > 0:
         return float(p_price)
 
-    p_type = row.get('車位', "無車位")
+    p_type = row.get('車位', row.get('parking_type', "無車位"))
     p_area = row.get('parking_area')
     
     # 直接從已經串接好的「車位」名稱中識別所有權與類型
@@ -154,17 +154,38 @@ def calculate_age_from_roc(roc_date_str):
     return None
     
 # =========================================================================
-# 透天選案保留最新 15 筆
+# 透天選案保留最新 10 筆（多重排序錨點穩定版）
 # =========================================================================
 def filter_detached_top10(df):
     """
     選案策略：取消同門牌去重複，但精準收攏回全市場最新交易日的前 10 筆紀錄
     （防止湊筆數而撈到 18 個月前的舊資料降低行情）
+    
+    💡 修正重點：加上雙重排序錨點，防止同日期案件在雲端與本機觸發隨機排序分流。
     """
     if df.empty: 
         return df
         
-    top_10 = df.sort_values(by='deal_date', ascending=False).head(10).copy()
+    # 🌟 修正：多條件排序（deal_date 最新 -> total_score 最高 -> id 最小）
+    # 這樣即便交易日期完全相同，兩端執行的結果也絕對會 100% 一致。
+    sort_cols = []
+    sort_orders = []
+    
+    # 動態檢查欄位是否存在，建立防禦性排序
+    if 'deal_date' in df.columns:
+        sort_cols.append('deal_date')
+        sort_orders.append(False) # 降冪（最新在前）
+    if 'total_score' in df.columns:
+        sort_cols.append('total_score')
+        sort_orders.append(False) # 降冪（權重高在前）
+    if 'id' in df.columns:
+        sort_cols.append('id')
+        sort_orders.append(True)  # 升冪（唯一識別碼對齊）
+        
+    if sort_cols:
+        top_10 = df.sort_values(by=sort_cols, ascending=sort_orders).head(10).copy()
+    else:
+        top_10 = df.head(10).copy()
 
     return top_10
     
