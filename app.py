@@ -457,9 +457,27 @@ elif res is not None:
     if len(all_coordinates) > 1:
         m.fit_bounds(all_coordinates)
 
-    # 渲染地圖至網頁上 (地圖大小)
-    st_folium(m, width=1100, height=600, returned_objects=[])
+    # =========================================================================
+    # 🗺️ 網頁緊湊貼合 與 列印高度防線
+    # =========================================================================
+    # 💡 透過 Streamlit html 注入一個局部微調，強行將地圖元件的底部外邊距（margin）歸零
+    st.markdown("""
+        <style>
+            /* 針對地圖與下一行文字中間的 Streamlit 預設大間距進行強行壓縮 */
+            .element-container:has(.folium-map) {
+                margin-bottom: -15px !important;
+            }
+            div[data-testid="stVerticalBlock"] > div:has(.folium-map) {
+                padding-bottom: 0rem !important;
+            }
+        </style>
+    """, unsafe_allow_html=True)
 
+    # 🌟 使用 st.container 限制地圖的實體空間，防止雲端瀏覽器自動撐開空白
+    with st.container():
+        st_folium(m, width=1100, height=450, returned_objects=[]) # 💡 建議將網頁地圖高度微調至 450-500，視覺比例在 A4 與網頁上最工整
+
+    # 🌟 緊接著顯示基本資料，確保上下邊界完全貼合
     st.write("### 📋 目標物件基本資料與行情估算")
     
     top_10_df = res['top_10'].copy()
