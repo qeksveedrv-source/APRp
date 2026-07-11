@@ -456,40 +456,10 @@ elif res is not None:
     # 利用 fit_bounds 功能，全自動調整地圖的中心點與縮放大小，確保看得到所有標記
     if len(all_coordinates) > 1:
         m.fit_bounds(all_coordinates)
+    
+    # 渲染地圖至網頁上 (地圖大小)
+    st_folium(m, width=1100, height=600, returned_objects=[])
 
-    # =========================================================================
-    # 🗺️ 網頁緊湊貼合 與 列印高度防線（終極精準打擊版）
-    # =========================================================================
-    # 💡 直接強制重寫 streamlit-folium 產生的 html iframe 元件高度與外邊距
-    st.markdown("""
-        <style>
-            /* 1. 鎖定地圖元件的外層包裝盒，強行將底部多餘的外邊距與內邊距歸零 */
-            .element-container:has(iframe) {
-                margin-bottom: -20px !important; /* 增加負邊距，將下方元件暴力往上拉 */
-            }
-            
-            /* 2. 針對 streamlit-folium 專屬的大型縱向區塊（stHtml）進行高度限制 */
-            div[data-testid="stHtml"] {
-                margin-bottom: -15px !important;
-                padding-bottom: 0px !important;
-            }
-            
-            /* 3. 確保地圖底部的 iframe 元件不會溢出，強行貼齊 450px 的物理限界 */
-            iframe {
-                max-height: 450px !important;
-            }
-            
-            /* 4. 消除 Streamlit 欄位之間預設的縱向 Padding */
-            div[data-testid="stVerticalBlock"] > div {
-                padding-bottom: 0rem !important;
-            }
-        </style>
-    """, unsafe_allow_html=True)
-
-    # 🌟 用精簡的 450 物理高度渲染地圖
-    st_folium(m, width=1100, height=450, returned_objects=[])
-
-    # 🌟 直接緊接標題，這時外層負邊距會強行把這行字往上吸到地圖邊緣
     st.write("### 📋 目標物件基本資料與行情估算")
     
     top_10_df = res['top_10'].copy()
