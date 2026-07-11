@@ -458,26 +458,38 @@ elif res is not None:
         m.fit_bounds(all_coordinates)
 
     # =========================================================================
-    # 🗺️ 網頁緊湊貼合 與 列印高度防線
+    # 🗺️ 網頁緊湊貼合 與 列印高度防線（終極精準打擊版）
     # =========================================================================
-    # 💡 透過 Streamlit html 注入一個局部微調，強行將地圖元件的底部外邊距（margin）歸零
+    # 💡 直接強制重寫 streamlit-folium 產生的 html iframe 元件高度與外邊距
     st.markdown("""
         <style>
-            /* 針對地圖與下一行文字中間的 Streamlit 預設大間距進行強行壓縮 */
-            .element-container:has(.folium-map) {
-                margin-bottom: -15px !important;
+            /* 1. 鎖定地圖元件的外層包裝盒，強行將底部多餘的外邊距與內邊距歸零 */
+            .element-container:has(iframe) {
+                margin-bottom: -20px !important; /* 增加負邊距，將下方元件暴力往上拉 */
             }
-            div[data-testid="stVerticalBlock"] > div:has(.folium-map) {
+            
+            /* 2. 針對 streamlit-folium 專屬的大型縱向區塊（stHtml）進行高度限制 */
+            div[data-testid="stHtml"] {
+                margin-bottom: -15px !important;
+                padding-bottom: 0px !important;
+            }
+            
+            /* 3. 確保地圖底部的 iframe 元件不會溢出，強行貼齊 450px 的物理限界 */
+            iframe {
+                max-height: 450px !important;
+            }
+            
+            /* 4. 消除 Streamlit 欄位之間預設的縱向 Padding */
+            div[data-testid="stVerticalBlock"] > div {
                 padding-bottom: 0rem !important;
             }
         </style>
     """, unsafe_allow_html=True)
 
-    # 🌟 使用 st.container 限制地圖的實體空間，防止雲端瀏覽器自動撐開空白
-    with st.container():
-        st_folium(m, width=1100, height=450, returned_objects=[]) # 💡 建議將網頁地圖高度微調至 450-500，視覺比例在 A4 與網頁上最工整
+    # 🌟 用精簡的 450 物理高度渲染地圖
+    st_folium(m, width=1100, height=450, returned_objects=[])
 
-    # 🌟 緊接著顯示基本資料，確保上下邊界完全貼合
+    # 🌟 直接緊接標題，這時外層負邊距會強行把這行字往上吸到地圖邊緣
     st.write("### 📋 目標物件基本資料與行情估算")
     
     top_10_df = res['top_10'].copy()
