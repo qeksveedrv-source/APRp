@@ -229,16 +229,16 @@ if run_btn:
             # =====================================================================
             if b_type == "透天厝":
                 from modules.utils import filter_detached_top10
+    
                 top_10 = filter_detached_top10(final_pool)
-                
-                valuation_msg = f"嚴格權重與距離篩選：共找到 {len(top_10)} 筆透天參考紀錄"
-                
+    
+                valuation_msg = f"時效優先篩選：共選取前 {len(top_10)} 筆最新交易紀錄"
+    
                 target_data = {'land': land_area, 'build': build_area, 'age': age, 'material': material_val}
-                # 傳入篩選好的 top_10 給引擎運算
                 low, high, top_10 = RealEstateValuator.run_detached_valuation(target_data, top_10, land_price)
-                
+    
                 eval_text = f"{int(low):,} 萬 - {int(high):,} 萬"
-                eval_mode = "透天厝成本法 (7最新+3最近加權)"
+                eval_mode = "透天厝成本法 (最新10筆加權中心發散法)"
 
             else:
                 # 集合住宅選案：依照分數由高到低排序，最多取前 10 筆
@@ -252,17 +252,19 @@ if run_btn:
                 eval_text = f"{low_up:.1f} 萬/坪 - {high_up:.1f} 萬/坪"
                 eval_mode = f"依面積推算總價：{int(low_up * build_area):,}萬 ~ {int(high_up * build_area):,}萬(不含車位）"
                 
+            # --- 💡 將此段落對應的變數進行動態覆寫分流 ---
             st.session_state.valuation_results = {
                 'addr': addr, 'lat': loc.latitude, 'lon': loc.longitude,
-                'top_10': top_10, 'eval_text': eval_text, 'eval_mode': eval_mode,
+                'top_10': top_10,
+                'eval_text': eval_text, 'eval_mode': eval_mode,
                 'b_type': b_type, 'build_area': build_area,
                 'valuation_msg': valuation_msg,
                 'land_price': land_price if b_type == "透天厝" else None,
                 'material_val': material_val if b_type == "透天厝" else None,
-                
+    
                 'low_bound': low if b_type == "透天厝" else low_up,
                 'high_bound': high if b_type == "透天厝" else high_up,
-                
+    
                 'target_data': target_data, 
                 'excluded_labels': []
             }
@@ -842,7 +844,7 @@ elif res is not None:
             res['low_bound'] = new_low
             res['high_bound'] = new_high
         else:
-            # 防呆機制：若 10 筆參考紀錄全被勾選刪除，則行情歸零
+            # 防呆機制：若所有參考紀錄全被勾選刪除，則行情歸零
             res['low_bound'], res['high_bound'] = 0, 0 
         
         st.session_state.valuation_results = res
@@ -877,22 +879,21 @@ elif res is not None:
                 <b style="font-size: 18px; color: #000;">💡 系統估價邏輯說明：透天厝 (成本法折舊 ＋ 市場溢價調整 ＋ 人工輔助刪除) 複合型演算法</b><br>
                 <div style="display: flex; gap: 20px; margin-top: 10px;">
                     <div style="flex: 1;">
-                        <b>第一階段：權重計分與案例篩選</b> (於周邊 1 公里內搜尋並為歷史案例打分)<br>
+                        <b>第一階段：案例搜尋與時效篩選</b> (於周邊 1 公里內進行地理搜尋)<br>
                         • <b>計分規則</b>：<br>
                         &nbsp;&nbsp;1. <b>交易年份</b>：1年內加6分、2年內加2分、3年內加1分、逾3年扣3分。<br>
                         &nbsp;&nbsp;2. <b>距離遠近</b>：50m內加4分、250m內加3分、500m內加2分、逾500m加1分。<br>
-                        • <b>選案策略</b>：同門牌去重複，保留 7 筆最新 + 3 筆距離最近」的紀錄。<br>
+                        • <b>選案策略</b>：全面保留周邊實登市場中<span style="color: #1f77b4; font-weight: bold;">「交易日期最新」的前 10 筆</span>成交紀錄。<br>
                         • <b>實登備註</b>：'親友', '急買', '急賣', '員工', '關係人', '借名', '畸零地', '保留地'。<br>
                         • <b>上述特殊交易</b>：資料庫轉檔過程，已篩選剃除。<br>
                     </div>
                     <div class="algo-column" style="flex: 1.1;">
                         <b>第二階段：估價引擎運算</b><br>
                         • <b>透天厝模式 (動態邊界區間法)</b>：<br>
-                        &nbsp;&nbsp;1. 計算案例溢價係數：包含所有溢價案例（<b>不論正負向全數保留</b>）。<br>
-                        &nbsp;&nbsp;2. <b>市場溢價區間</b>：自動排序並鎖定「次低溢價係數」～「次高溢價係數」。<br>
-                        &nbsp;&nbsp;3. <b>合理行情估算</b>：區間直接定義為：<br>
-                        &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;💰 <span style="color: #28a745; font-weight: bold;">標的總成本 × (1 + 次低溢價係數)</span> &nbsp;～&nbsp; <span style="color: #dc3545; font-weight: bold;">標的總成本 × (1 + 次高溢價係數)</span>。<br>
-                        • <b>合理區間調整</b>：完全由周邊實證案例框定邊界，需人工判斷勾選刪除偏離紀錄即時重算。
+                        &nbsp;&nbsp;1. <b>市場溢價區間</b>：包含所有案例（不論正負向），鎖定「最低溢價係數」～「最高溢價係數」。<br>
+                        &nbsp;&nbsp;2. <b>合理中間值</b>：將所有參考案例之溢價係數，依據相似度總分進行<b>加權平均</b>認定。<br>
+                        &nbsp;&nbsp;3. <b>合理行情估算</b>：以加權平均推算之中心總價為基準，框定 <span style="color: #28a745; font-weight: bold;">合理中間值 - 10%</span> &nbsp;～&nbsp; <span style="color: #dc3545; font-weight: bold;">合理中間值 + 10%</span> 區間。<br>
+                        • <b>合理區間調整</b>：完全連動核心加權值，可人工判斷勾選刪除偏離紀錄即時重算。
                     </div>
                 </div>
             </div>

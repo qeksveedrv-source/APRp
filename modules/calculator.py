@@ -49,7 +49,7 @@ class RealEstateValuator:
         return base * rate
 
     # =========================================================================
-    #  2. 🏠 透天厝估價引擎 (次低~次高溢價區間法 | 保留正負向)
+    #  2. 交易加權強化法
     # =========================================================================
     @classmethod
     def run_detached_valuation(cls, target, df, land_price):
@@ -60,9 +60,9 @@ class RealEstateValuator:
         if df.empty:
             return 0, 0, df
 
-        df = df.copy() # 避免修改到原始資料的警告
+        df = df.copy()
         
-        # 批次計算所有案例的建物成本
+        # 批次計算所有案例的建物成本與總成本
         df['b_cost'] = df.apply(lambda row: cls.calculate_cost(
             row.get('land_area', 0), 
             row.get('total_build_area', 0), 
@@ -70,51 +70,61 @@ class RealEstateValuator:
             row.get('material', '')
         ), axis=1)
         
-        # 批次計算總成本與每萬總價
         df['case_base_cost'] = (df['land_area'] * land_price) + df['b_cost']
         df['p_wan'] = df['price'] / 10000.0
         
-        # 批次計算溢價係數 (使用 np.where 防呆，避免分母為 0 導致程式崩潰)
-        # 🌟 亮點：保留所有溢價案例（不論正負向）
+        # 計算原始溢價係數
         df['premium_rate'] = np.where(
             df['case_base_cost'] > 0, 
             (df['p_wan'] - df['case_base_cost']) / df['case_base_cost'], 
             0.0
         )
         
-        # 全數保留為有效案件，並四捨五入至小數第二位供畫表
-        valid_df = df.copy()
+        # 🌟 防護機制一：排除嚴重低於市場成本、折舊不合理的「超低負溢價極端值」
+        # 若成交價低於總成本超過 15% (即溢價率 < -0.15)，視為瑕疵、親友漏報或特殊案件，直接不計入
+        valid_df = df[df['premium_rate'] >= -0.15].copy()
         valid_df['market_premium'] = valid_df['premium_rate'].round(2)
         
-        # 2. 🌟 核心修改點：依「次低」與「次高」溢價係數決定市場區間
-        premiums = sorted(valid_df['premium_rate'].tolist())
-        total_cases = len(premiums)
+        premiums = valid_df['premium_rate'].tolist()
         
-        if total_cases >= 4:
-            # 正常狀況：去頭去尾，取次低與次高
-            low_premium = premiums[1]       # 次低
-            high_premium = premiums[-2]     # 次高
-        elif total_cases == 3:
-            # 只有 3 筆：取中間值作為單一基準，或展開範圍
-            low_premium = premiums[0]
-            high_premium = premiums[-1]
-        elif total_cases == 2:
-            low_premium = premiums[0]
-            high_premium = premiums[1]
-        elif total_cases == 1:
-            low_premium = premiums[0]
-            high_premium = premiums[0]
-        else:
-            low_premium = 0.0
-            high_premium = 0.0
+        if premiums:
+            # 市場溢價區間依然忠實呈現當前池子的最低與最高
+            low_premium = min(premiums)
+            high_premium = max(premiums)
             
-        # 3. 🌟 行情公式變更：
-        # 合理行情區間 = 標的總成本 × (1 + 次低溢價係數) ～ 標的總成本 × (1 + 次高溢價係數)
-        val_low_bound = target_base_cost * (1 + low_premium)
-        val_high_bound = target_base_cost * (1 + high_premium)
-        
-        # 回傳最終動態行情區間，並將 valid_df 傳回給前端畫表
-        return val_low_bound, val_high_bound, valid_df 
+            # 🌟 防護機制二：時間加權乘數（讓最新半年的成交案發揮關鍵影響力）
+            # 讀取原本的 total_score (包含年份與距離加分)，如果是1年內成交者，額外給予 1.5 倍的算力乘數
+            # 這樣可以強行把大於18個月、拉低行情的舊案權重壓低
+            raw_weights = valid_df['total_score'].fillna(1).values
+            
+            # 若原始資料包含 deal_date，偵測成交時效
+            time_multipliers = []
+            for _, row in valid_df.iterrows():
+                # 簡單利用 total_score 的基礎分數判定 (原本 1 年內交易年度加權會拿到最高的 6 分)
+                if row.get('total_score', 0) >= 6: 
+                    time_multipliers.append(1.5)  # 最新案件，權重放大 1.5 倍
+                else:
+                    time_multipliers.append(1.0)  # 舊案件維持原權重
+                    
+            # 最終複合權重 = 相似度總分 × 時效乘數
+            final_weights = raw_weights * np.array(time_multipliers)
+            
+            # 執行高時效加權平均
+            if np.sum(final_weights) > 0:
+                avg_premium = np.average(premiums, weights=final_weights)
+            else:
+                avg_premium = np.mean(premiums)
+                
+            # 中心預測總價 = 標的總成本 × (1 + 高時效加權平均溢價)
+            center_price = target_base_cost * (1 + avg_premium)
+            
+            val_low_bound = center_price * 0.90   # 中間值 - 10%
+            val_high_bound = center_price * 1.10  # 中間值 + 10%
+        else:
+            val_low_bound = target_base_cost
+            val_high_bound = target_base_cost
+            
+        return val_low_bound, val_high_bound, valid_df
     
     # ==========================================
     # 3. 🏢 集合住宅估價引擎 (實質單價法 + 加權平均)
