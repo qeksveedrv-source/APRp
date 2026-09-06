@@ -893,7 +893,7 @@ elif res is not None:
             </div>
         """, unsafe_allow_html=True)
     # =========================================================================
-    # 12. 集合住宅訪價邏輯說明（內嵌車位建議行情表，列印時隱藏）
+    # 12. 集合住宅訪價邏輯說明（列印時隱藏）
     # =========================================================================
     elif res.get('b_type') != "透天厝":
         st.markdown("""
@@ -911,23 +911,6 @@ elif res is not None:
             }
             .algo-column {
                 flex: 1;
-            }
-            /* 內嵌車位表格樣式 */
-            .parking-mini-table {
-                width: 100%;
-                border-collapse: collapse;
-                margin-top: 8px;
-                font-size: 14px;
-            }
-            .parking-mini-table th, .parking-mini-table td {
-                border: 1px solid #DDDDDD !important;
-                padding: 6px 8px !important;
-                text-align: center !important;
-                color: #000000 !important;
-            }
-            .parking-mini-table th {
-                background-color: #E9ECEF !important;
-                font-weight: bold;
             }
             
             /* 🚀 核心修正：列印 PDF 時，徹底隱藏這個區塊 */
@@ -953,25 +936,11 @@ elif res is not None:
                     <div class="algo-column" style="flex: 1.1;">
                         <b>第二階段：估價引擎運算</b><br>
                         • <b>車位拆算</b>：剔除車位價格與面積，還原純房屋的「實質單價 (萬/坪)」。<br>
-                        • <b>車位價格標示為 0</b>：若實登車位價為 0，系統將自動扣除估算：「平面所有權」扣155萬、「平面使用權」扣115萬、「機械所有權」扣80萬、「機械使用權」扣50萬。
+                        • <b>車位價格判定</b>：實登有明確金額則直接扣除；若為 0，系統自動根據<b>所在縣市</b>與<b>車位型態</b>（平面/機械、所有權/使用權）套用預設行情扣除。<br>
                         • <b>加權平均單價</b>：將 10 筆案例的實質單價，依照第一階段算出的「總分」進行加權平均。<br>
                         &nbsp;&nbsp;<span style="color: #555; font-size: 14px;">(公式：Σ(各案例實質單價 × 各案例總分) / Σ(所有案例總分) )</span><br>
                         • <b>預測中心總價</b>：加權平均單價 × 目標物件建物面積 (不含車位)。<br>
                         • <b>合理區間</b>：將預測中心價乘上 ±6%，得出最終合理行情區間。
-                    </div>
-                    <div class="algo-column" style="flex: 0.8;">
-                        <b>🚗 車位建議行情參考</b><br>
-                        <table class="parking-mini-table">
-                            <thead>
-                                <tr><th>類型</th><th>權利</th><th>建議行情</th></tr>
-                            </thead>
-                            <tbody>
-                                <tr><td>平面</td><td>所有權</td><td>130～180萬</td></tr>
-                                <tr><td>平面</td><td>使用權</td><td>90～140萬</td></tr>
-                                <tr><td>機械</td><td>所有權</td><td>60～100萬</td></tr>
-                                <tr><td>機械</td><td>使用權</td><td>30～70萬</td></tr>
-                            </tbody>
-                        </table>
                     </div>
                 </div>
             </div>

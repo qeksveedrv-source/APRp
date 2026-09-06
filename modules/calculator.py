@@ -131,16 +131,25 @@ class RealEstateValuator:
     # ==========================================
     @classmethod
     def run_apartment_valuation(cls, df):
-        # 如果資料為空，或者 app.py 沒有傳入算好的單價，直接回傳 0
+        # 如果資料為空，或者沒有傳入算好的單價，直接回傳 0
         if df.empty or 'unit_price_p' not in df.columns:
             return 0, 0
 
+        # 過濾出有效的實質單價紀錄
         valid_df = df[df['unit_price_p'] > 0].dropna(subset=['unit_price_p']).copy()
         
         if not valid_df.empty:
-            weights = valid_df['total_score'].fillna(1).values
+            # 🌟 防護一：若 total_score 中包含負分（例如距離過遠或屋齡差過大），轉為最小正值 0.1，避免權重總合為零或產生負權重
+            raw_scores = valid_df['total_score'].fillna(1).values
+            weights = np.where(raw_scores <= 0, 0.1, raw_scores)
+            
             prices = valid_df['unit_price_p'].values
-            avg_unit_price = np.average(prices, weights=weights) if np.sum(weights) > 0 else np.mean(prices)
+            
+            # 🌟 防護二：確保權重總合大於 0 才進行加權，否則安全退回算術平均
+            if np.sum(weights) > 0:
+                avg_unit_price = np.average(prices, weights=weights)
+            else:
+                avg_unit_price = np.mean(prices)
         else:
             avg_unit_price = 0
             
